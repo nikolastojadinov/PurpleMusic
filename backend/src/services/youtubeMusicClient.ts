@@ -1143,38 +1143,38 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
   const config = await fetchInnertubeConfig();
   if (!config) return null;
 
-    const raw = await callYoutubei<any>(config, "browse", {
+    const data = await callYoutubei<any>(config, "browse", {
     context: buildSearchBody(config, "").context,
     browseId,
   });
 
     try {
-      console.error("[DEBUG][browse_raw_full]", JSON.stringify(raw, null, 2).slice(0, 12000));
+      console.error("[DEBUG][browse_raw_full]", JSON.stringify(data, null, 2).slice(0, 12000));
     } catch {
       // non-fatal debug logging failure
     }
 
-  if (DEBUG) {
-      console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(raw || {}));
-      console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(raw?.contents ?? null, null, 2));
+    if (DEBUG) {
+      console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(data || {}));
+      console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(data?.contents ?? null, null, 2));
   }
 
-    if (!raw) return null;
+    if (!data) return null;
 
-    const header = raw?.header?.musicDetailHeaderRenderer;
+    const header = data?.header?.musicDetailHeaderRenderer;
   const title = pickText(header?.title) || playlistId;
   const subtitle = pickRunsText(header?.secondSubtitle?.runs) || "";
   const thumbnailUrl =
     pickThumbnail(header?.thumbnail?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails) ||
     pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
-      pickThumbnail(raw?.background?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
+      pickThumbnail(data?.background?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
     null;
 
-    const tracks = parsePlaylistBrowseTracks(raw, browseId);
+    const tracks = parsePlaylistBrowseTracks(data, browseId);
 
     if (!tracks.length) {
-      console.error("[DEBUG][raw_innertube_response]", JSON.stringify(raw, null, 2));
-      console.error("[DEBUG][empty_tracks_raw]", JSON.stringify(raw, null, 2));
+      console.error("[DEBUG][raw_innertube_response]", JSON.stringify(data, null, 2));
+      console.error("[DEBUG][empty_tracks_raw]", JSON.stringify(data, null, 2));
   }
 
   return { playlistId, title, subtitle, thumbnailUrl, tracks };
