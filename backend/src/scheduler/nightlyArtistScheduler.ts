@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { runNightlyArtistIngestOnce } from '../jobs/nightlyArtistIngest';
 
-const CRON_EXPRESSION = '0 2 * * *'; // 02:00 UTC daily
+const CRON_EXPRESSION = '* * * * *'; // every minute for testing
 let scheduled = false;
 
 export function startNightlyArtistScheduler(): void {
