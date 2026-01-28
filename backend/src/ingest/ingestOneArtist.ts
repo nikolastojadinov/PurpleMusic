@@ -6,7 +6,7 @@ import { nowIso } from './utils';
 export type IngestOneArtistParams = {
   browseId?: string;
   artistName?: string;
-  requestedArtistKey?: string;
+  requestedArtistKey: string;
   youtubeChannelId?: string;
 };
 

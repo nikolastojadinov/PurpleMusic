@@ -1,4 +1,5 @@
-import { canonicalArtistKey, normalize, nowIso, upsertArtist } from '../utils';
+import supabase from '../../lib/supabase';
+import { normalize, nowIso } from '../utils';
 import { fetchArtistBrowse, resolveArtistBrowseIdByName, type ArtistBrowse } from '../../ytmusic/innertubeClient';
 
 export type Phase1Output = {
@@ -8,59 +9,103 @@ export type Phase1Output = {
   artistBrowse: ArtistBrowse;
 };
 
-export async function runPhase1Core(params: {
-  browseId?: string;
-  artistName?: string;
-  requestedArtistKey?: string;
-  youtubeChannelId?: string;
-}): Promise<Phase1Output> {
+type Phase1Params = {
+  requestedArtistKey: string;
+  youtubeChannelId?: string | null;
+  browseId?: string | null;
+  artistName?: string | null;
+};
+
+const looksOfficialArtistId = (value: string | null | undefined): value is string => {
+  const v = normalize(value).toUpperCase();
+  return /^UC/.test(v) || /^MPLA/.test(v);
+};
+
+async function loadExistingArtist(artistKeyRaw: string) {
+  const artistKey = normalize(artistKeyRaw);
+  if (!artistKey) throw new Error('requestedArtistKey is required');
+
+  const { data, error } = await supabase
+    .from('artists')
+    .select('id, artist_key, name, display_name, youtube_channel_id, description, thumbnails')
+    .eq('artist_key', artistKey)
+    .maybeSingle();
+
+  if (error) throw new Error(`[phase1_core] failed to load artist: ${error.message}`);
+  if (!data) throw new Error(`[phase1_core] artist not found: ${artistKey}`);
+
+  return data;
+}
+
+async function resolveBrowseId(params: {
+  existingChannelId?: string | null;
+  incomingBrowseId?: string | null;
+  incomingChannelId?: string | null;
+  searchName?: string | null;
+}): Promise<string> {
+  const direct = normalize(params.incomingBrowseId || params.incomingChannelId || params.existingChannelId);
+  if (looksOfficialArtistId(direct)) return direct;
+
+  const name = normalize(params.searchName);
+  if (!name) throw new Error('[phase1_core] cannot resolve browseId without a name');
+
+  const resolved = await resolveArtistBrowseIdByName(name);
+  if (!looksOfficialArtistId(resolved)) {
+    throw new Error('[phase1_core] failed to resolve official artist browseId');
+  }
+  return normalize(resolved);
+}
+
+async function updateArtistChannelAndMeta(artistKey: string, browseId: string, browse: ArtistBrowse, existing: any): Promise<void> {
+  const updatePayload: Record<string, any> = {
+    youtube_channel_id: browseId,
+    updated_at: nowIso(),
+  };
+
+  if (browse.description) updatePayload.description = browse.description;
+  if (browse.thumbnails && browse.thumbnails.length > 0) updatePayload.thumbnails = browse.thumbnails;
+  const displayName = normalize(existing.display_name || existing.name);
+  if (!displayName && browse.name) {
+    updatePayload.display_name = browse.name;
+  }
+  if (!normalize(existing.name) && browse.name) {
+    updatePayload.name = browse.name;
+  }
+
+  const { error } = await supabase.from('artists').update(updatePayload).eq('artist_key', artistKey);
+  if (error) throw new Error(`[phase1_core] failed to update artist: ${error.message}`);
+}
+
+export async function runPhase1Core(params: Phase1Params): Promise<Phase1Output> {
   const started = Date.now();
-  const providedChannelId = normalize(params.youtubeChannelId);
-  const initialBrowseId = normalize(params.browseId || providedChannelId);
-  const artistName = normalize(params.artistName);
+  const requestedArtistKey = normalize(params.requestedArtistKey);
+  const existing = await loadExistingArtist(requestedArtistKey);
 
-  if (!initialBrowseId && !artistName) throw new Error('browseId or artistName is required for phase1');
+  const browseId = await resolveBrowseId({
+    existingChannelId: existing.youtube_channel_id,
+    incomingBrowseId: params.browseId,
+    incomingChannelId: params.youtubeChannelId,
+    searchName: params.artistName || existing.name || existing.display_name,
+  });
 
-  const looksOfficialArtistId = (value: string) => /^(UC|MPLA)/i.test(value);
-
-  let browseId = initialBrowseId;
-  if (browseId && !looksOfficialArtistId(browseId) && artistName) {
-    const resolved = await resolveArtistBrowseIdByName(artistName);
-    if (resolved) browseId = resolved;
-    console.info('[phase1_core] browse_id_normalized', { name: artistName, input: initialBrowseId, browseId: resolved });
-  }
-
-  if (!browseId && artistName) {
-    const resolved = await resolveArtistBrowseIdByName(artistName);
-    browseId = resolved || '';
-    console.info('[phase1_core] resolved_browse_id', { name: artistName, browseId: resolved });
-  }
-
-  if (!looksOfficialArtistId(browseId)) {
-    throw new Error('browseId must be an official channel or artist id');
-  }
-
-  if (!browseId) throw new Error('browseId resolution failed for phase1');
-
-  console.info('[ingest][phase1_core] phase_start', { browseId, at: nowIso() });
+  console.info('[ingest][phase1_core] phase_start', { artist_key: requestedArtistKey, browse_id: browseId, at: nowIso() });
 
   const artistBrowse = await fetchArtistBrowse(browseId);
   if (!artistBrowse) throw new Error('artist browse failed');
 
-  const artistKey = canonicalArtistKey(params.requestedArtistKey || artistBrowse.name, artistBrowse.channelId);
-
-  const artistResult = await upsertArtist({
-    artistKey,
-    name: artistBrowse.name,
-    displayName: artistBrowse.name,
-    youtubeChannelId: artistBrowse.channelId,
-    description: artistBrowse.description,
-    thumbnails: artistBrowse.thumbnails,
-    source: 'ingest',
-  });
+  await updateArtistChannelAndMeta(requestedArtistKey, browseId, artistBrowse, existing);
 
   const duration = Date.now() - started;
-  console.info('[ingest][phase1_core] phase_complete', { artist_key: artistKey, browse_id: browseId, duration_ms: duration });
+  console.info('[ingest][phase1_core] phase_complete', {
+    artist_key: requestedArtistKey,
+    browse_id: browseId,
+    duration_ms: duration,
+  });
 
-  return { artistKey: artistResult.artistKey, artistId: artistResult.id, browseId, artistBrowse };
+  return {
+    artistKey: requestedArtistKey,
+    artistId: existing.id,
+    browseId,
+    artistBrowse,
+  };
 }
