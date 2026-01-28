@@ -4,7 +4,7 @@ import { ingestOneArtist } from './ingest/ingestOneArtist';
 async function main() {
   const { data, error } = await supabase
     .from('artists')
-    .select('artist_key, youtube_channel_id')
+    .select('artist_key, name, youtube_channel_id')
     .order('updated_at', { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -15,10 +15,10 @@ async function main() {
     return;
   }
 
-  const browseId = data.youtube_channel_id || data.artist_key;
-  console.info('[runOnce] ingest_start', { artist_key: data.artist_key, browse_id: browseId });
+  const browseId = data.youtube_channel_id || undefined;
+  console.info('[runOnce] ingest_start', { artist_key: data.artist_key, browse_id: browseId, name: data.name });
 
-  const result = await ingestOneArtist({ browseId, requestedArtistKey: data.artist_key });
+  const result = await ingestOneArtist({ browseId, artistName: data.name || undefined, requestedArtistKey: data.artist_key });
   console.info('[runOnce] ingest_complete', result);
 }
 

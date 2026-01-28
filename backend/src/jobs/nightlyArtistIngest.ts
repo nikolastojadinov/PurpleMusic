@@ -21,7 +21,11 @@ export async function runNightlyArtistIngestOnce(): Promise<void> {
   console.info('[nightly-artist-ingest] candidate_selected', candidate);
 
   try {
-    await ingestOneArtist({ browseId: candidate.youtube_channel_id || candidate.artist_key, requestedArtistKey: candidate.artist_key });
+    await ingestOneArtist({
+      browseId: candidate.youtube_channel_id || undefined,
+      artistName: candidate.name || undefined,
+      requestedArtistKey: candidate.artist_key,
+    });
   } finally {
     const durationMs = Date.now() - startedAtMs;
     console.info('[nightly-artist-ingest] run_complete', {
@@ -32,10 +36,10 @@ export async function runNightlyArtistIngestOnce(): Promise<void> {
   }
 }
 
-async function pickNextArtistCandidate(): Promise<{ artist_key: string; youtube_channel_id: string | null } | null> {
+async function pickNextArtistCandidate(): Promise<{ artist_key: string; name: string | null; youtube_channel_id: string | null } | null> {
   const { data, error } = await supabase
     .from('artists')
-    .select('artist_key, youtube_channel_id')
+    .select('artist_key, name, youtube_channel_id')
     .is('youtube_channel_id', null)
     .order('updated_at', { ascending: true, nullsFirst: true })
     .order('created_at', { ascending: true })
@@ -47,5 +51,5 @@ async function pickNextArtistCandidate(): Promise<{ artist_key: string; youtube_
     return null;
   }
   if (!data) return null;
-  return { artist_key: data.artist_key, youtube_channel_id: data.youtube_channel_id };
+  return { artist_key: data.artist_key, name: data.name ?? null, youtube_channel_id: data.youtube_channel_id };
 }

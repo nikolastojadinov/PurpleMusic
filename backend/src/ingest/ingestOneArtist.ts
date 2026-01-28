@@ -4,7 +4,8 @@ import { runPhase3Expansion } from './phases/phase3_expansion';
 import { nowIso } from './utils';
 
 export type IngestOneArtistParams = {
-  browseId: string;
+  browseId?: string;
+  artistName?: string;
   requestedArtistKey?: string;
 };
 
@@ -20,9 +21,13 @@ export async function ingestOneArtist(params: IngestOneArtistParams): Promise<In
   const started = Date.now();
   const errors: string[] = [];
 
-  console.info('[ingest][artist] start', { browse_id: params.browseId, at: nowIso() });
+  console.info('[ingest][artist] start', { browse_id: params.browseId, artist_name: params.artistName, at: nowIso() });
 
-  const phase1 = await runPhase1Core({ browseId: params.browseId, requestedArtistKey: params.requestedArtistKey });
+  const phase1 = await runPhase1Core({
+    browseId: params.browseId,
+    artistName: params.artistName,
+    requestedArtistKey: params.requestedArtistKey,
+  });
   const phase2 = await runPhase2Metadata({
     artistId: phase1.artistId,
     artistKey: phase1.artistKey,

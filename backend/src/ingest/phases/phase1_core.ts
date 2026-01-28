@@ -1,5 +1,5 @@
 import { canonicalArtistKey, normalize, nowIso, upsertArtist } from '../utils';
-import { fetchArtistBrowse, type ArtistBrowse } from '../../ytmusic/innertubeClient';
+import { fetchArtistBrowse, resolveArtistBrowseIdByName, type ArtistBrowse } from '../../ytmusic/innertubeClient';
 
 export type Phase1Output = {
   artistKey: string;
@@ -8,10 +8,21 @@ export type Phase1Output = {
   artistBrowse: ArtistBrowse;
 };
 
-export async function runPhase1Core(params: { browseId: string; requestedArtistKey?: string }): Promise<Phase1Output> {
+export async function runPhase1Core(params: { browseId?: string; artistName?: string; requestedArtistKey?: string }): Promise<Phase1Output> {
   const started = Date.now();
-  const browseId = normalize(params.browseId);
-  if (!browseId) throw new Error('browseId is required for phase1');
+  const initialBrowseId = normalize(params.browseId);
+  const artistName = normalize(params.artistName);
+
+  if (!initialBrowseId && !artistName) throw new Error('browseId or artistName is required for phase1');
+
+  let browseId = initialBrowseId;
+  if (!browseId && artistName) {
+    const resolved = await resolveArtistBrowseIdByName(artistName);
+    browseId = resolved || '';
+    console.info('[phase1_core] resolved_browse_id', { name: artistName, browseId: resolved });
+  }
+
+  if (!browseId) throw new Error('browseId resolution failed for phase1');
 
   console.info('[ingest][phase1_core] phase_start', { browseId, at: nowIso() });
 

@@ -95,6 +95,21 @@ export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrow
   }
 }
 
+export async function resolveArtistBrowseIdByName(nameRaw: string): Promise<string | null> {
+  const name = normalize(nameRaw);
+  if (!name) return null;
+  try {
+    const client = await getClient();
+    const search: any = await (client as any).music.search(name, { type: 'artists' });
+    const first = (search?.artists || [])[0];
+    const browseId = normalize(first?.browseId || first?.channelId || first?.id);
+    return browseId || null;
+  } catch (err: any) {
+    console.error('[ytmusic][artist_search] failed', { name, message: err?.message || String(err) });
+    return null;
+  }
+}
+
 export async function fetchAlbumBrowse(browseIdRaw: string): Promise<AlbumBrowse | null> {
   const browseId = normalize(browseIdRaw);
   if (!browseId) return null;
