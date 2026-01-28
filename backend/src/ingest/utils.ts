@@ -57,10 +57,8 @@ function canonicalArtistKeyFromName(name: string): string {
   return collapsed || 'artist';
 }
 
-export function canonicalArtistKey(name: string, channelId?: string | null): string {
-  const base = canonicalArtistKeyFromName(name);
-  const channel = normalize(channelId).toLowerCase();
-  return channel ? `${base}_${channel}` : base;
+export function canonicalArtistKey(name: string): string {
+  return canonicalArtistKeyFromName(name);
 }
 
 export function nowIso(): string {
@@ -101,9 +99,22 @@ function dedupePreserveOrder(ids: string[]): string[] {
   return ordered;
 }
 
+async function requireExistingArtistId(artistKeyRaw: string): Promise<{ id: string }> {
+  const artistKey = normalize(artistKeyRaw);
+  if (!artistKey) throw new Error('[artist_upsert] artistKey is required');
+  const { data, error } = await supabase
+    .from('artists')
+    .select('id')
+    .eq('artist_key', artistKey)
+    .maybeSingle();
+  if (error) throw new Error(`[artist_lookup] ${error.message}`);
+  if (!data?.id) throw new Error(`[artist_lookup] artist not found: ${artistKey}`);
+  return { id: data.id as string };
+}
+
 export async function upsertArtist(input: ArtistInput): Promise<{ id: string; artistKey: string }> {
   const artistKey = normalize(input.artistKey);
-  if (!artistKey) throw new Error('[artist_upsert] artistKey is required');
+  const existing = await requireExistingArtistId(artistKey);
 
   const payload = {
     artist_key: artistKey,
@@ -119,16 +130,10 @@ export async function upsertArtist(input: ArtistInput): Promise<{ id: string; ar
     updated_at: nowIso(),
   };
 
-  const { data, error } = await supabase
-    .from('artists')
-    .upsert(payload, { onConflict: 'artist_key' })
-    .select('id, artist_key')
-    .maybeSingle();
-
+  const { error } = await supabase.from('artists').update(payload).eq('artist_key', artistKey);
   if (error) throw new Error(`[artist_upsert] ${error.message}`);
-  if (!data?.id) throw new Error('[artist_upsert] upsert returned no id');
 
-  return { id: data.id as string, artistKey: data.artist_key as string };
+  return { id: existing.id, artistKey };
 }
 
 export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Promise<{ map: IdMap; count: number }> {
@@ -142,7 +147,7 @@ export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Prom
         external_id: externalId,
         artist_id: artistId,
         title: normalize(a.title) || externalId,
-        album_type: a.albumType ?? 'album',
+        album_type: a.albumType ?? null,
         cover_url: coalesceUrl(a.coverUrl),
         thumbnails: a.thumbnails ?? null,
         source: normalize(a.source) || DEFAULT_SOURCE,
@@ -345,4 +350,3 @@ export async function linkArtistPlaylists(artistId: string, playlistIds: string[
   if (error) throw new Error(`[artist_playlists] ${error.message}`);
   return rows.length;
 }
-
