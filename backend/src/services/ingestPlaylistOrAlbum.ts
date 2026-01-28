@@ -278,7 +278,7 @@ async function upsertAlbums(inputs: AlbumInput[]): Promise<{ map: IdMap; count: 
         title: normalize(a.title) || 'Album',
         thumbnailUrl: a.thumbnailUrl ?? null,
         releaseDate: a.releaseDate ? a.releaseDate : null,
-        albumType: a.albumType ?? null,
+        albumType: a.albumType ?? 'album',
         artistKey: Array.isArray(a.artistKeys) && a.artistKeys.length > 0 ? a.artistKeys[0] : null,
         trackCount: normalizeTrackCount(a.trackCount),
       };

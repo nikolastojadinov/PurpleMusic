@@ -1143,31 +1143,31 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
   const config = await fetchInnertubeConfig();
   if (!config) return null;
 
-  const browseJson = await callYoutubei<any>(config, "browse", {
+    const raw = await callYoutubei<any>(config, "browse", {
     context: buildSearchBody(config, "").context,
     browseId,
   });
 
   if (DEBUG) {
-    console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(browseJson || {}));
-    console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(browseJson?.contents ?? null, null, 2));
+      console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(raw || {}));
+      console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(raw?.contents ?? null, null, 2));
   }
 
-  if (!browseJson) return null;
+    if (!raw) return null;
 
-  const header = browseJson?.header?.musicDetailHeaderRenderer;
+    const header = raw?.header?.musicDetailHeaderRenderer;
   const title = pickText(header?.title) || playlistId;
   const subtitle = pickRunsText(header?.secondSubtitle?.runs) || "";
   const thumbnailUrl =
     pickThumbnail(header?.thumbnail?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails) ||
     pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
-    pickThumbnail(browseJson?.background?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
+      pickThumbnail(raw?.background?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
     null;
 
-  const tracks = parsePlaylistBrowseTracks(browseJson, browseId);
+    const tracks = parsePlaylistBrowseTracks(raw, browseId);
 
-  if (!tracks.length) {
-    console.error("[DEBUG][raw_innertube_response]", JSON.stringify(browseJson, null, 2));
+    if (!tracks.length) {
+      console.error("[DEBUG][raw_innertube_response]", JSON.stringify(raw, null, 2));
   }
 
   return { playlistId, title, subtitle, thumbnailUrl, tracks };
