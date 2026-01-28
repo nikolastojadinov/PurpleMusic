@@ -1143,10 +1143,28 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
   const config = await fetchInnertubeConfig();
   if (!config) return null;
 
-    const data = await callYoutubei<any>(config, "browse", {
+  const payload = {
     context: buildSearchBody(config, "").context,
     browseId,
-  });
+  };
+
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": YTM_USER_AGENT,
+    Origin: "https://music.youtube.com",
+    Referer: "https://music.youtube.com/search",
+    Cookie: CONSENT_COOKIES,
+    "X-Goog-Visitor-Id": config.visitorData,
+    "X-YouTube-Client-Name": "67",
+    "X-YouTube-Client-Version": config.clientVersion,
+  } as const;
+
+  console.error("[DEBUG][REQUEST_HEADERS]", headers);
+  console.error("[DEBUG][REQUEST_CONTEXT]", JSON.stringify(payload.context, null, 2));
+
+  const data = await callYoutubei<any>(config, "browse", payload);
 
     try {
       console.error("[DEBUG][browse_raw_full]", JSON.stringify(data, null, 2).slice(0, 12000));
