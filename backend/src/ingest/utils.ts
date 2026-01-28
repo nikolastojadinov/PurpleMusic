@@ -50,8 +50,34 @@ export function normalize(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function canonicalArtistKeyFromName(name: string): string {
+  const base = normalize(name).toLowerCase();
+  const collapsed = base.replace(/\s+/g, '_');
+  return collapsed || 'artist';
+}
+
+export function canonicalArtistKey(name: string, channelId?: string | null): string {
+  const base = canonicalArtistKeyFromName(name);
+  const channel = normalize(channelId).toLowerCase();
+  return channel ? `${base}_${channel}` : base;
+}
+
 export function nowIso(): string {
   return new Date().toISOString();
+}
+
+export function toSeconds(raw: string | number | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return Math.floor(raw);
+  const value = normalize(raw);
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Number.parseInt(value, 10);
+  const parts = value
+    .split(':')
+    .map((p) => Number.parseInt(p, 10))
+    .filter((n) => Number.isFinite(n));
+  if (!parts.length) return null;
+  return parts.reduce((acc, cur) => acc * 60 + cur, 0);
 }
 
 export async function upsertArtist(input: ArtistInput): Promise<{ id: string; artistKey: string }> {
@@ -164,8 +190,8 @@ export async function upsertPlaylists(inputs: PlaylistInput[]): Promise<{ map: I
   return { map, count: rows.length };
 }
 
-export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; count: number }> {
-  if (!inputs.length) return { map: {}, count: 0 };
+export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; idMap: IdMap; count: number }> {
+  if (!inputs.length) return { map: {}, idMap: {}, count: 0 };
   const now = nowIso();
   const rows = inputs
     .map((t) => {
@@ -186,7 +212,7 @@ export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; 
     })
     .filter(Boolean) as Array<Record<string, any>>;
 
-  if (!rows.length) return { map: {}, count: 0 };
+  if (!rows.length) return { map: {}, idMap: {}, count: 0 };
 
   const { error } = await supabase.from('tracks').upsert(rows, { onConflict: 'external_id' });
   if (error) throw new Error(`[track_upsert] ${error.message}`);
@@ -203,7 +229,40 @@ export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; 
     if (row?.id && key) map[key] = row.id;
   });
 
-  return { map, count: rows.length };
+  return { map, idMap: map, count: rows.length };
+}
+
+export async function seedArtistsFromNames(names: string[]): Promise<number> {
+  if (!names.length) return 0;
+  const now = nowIso();
+  const seen = new Set<string>();
+  const rows = names
+    .map((raw) => normalize(raw))
+    .filter(Boolean)
+    .map((name) => {
+      const key = canonicalArtistKeyFromName(name);
+      if (seen.has(key)) return null;
+      seen.add(key);
+      return {
+        artist_key: key,
+        name,
+        display_name: name,
+        source: 'seed',
+        updated_at: now,
+      };
+    })
+    .filter(Boolean) as Array<Record<string, any>>;
+
+  if (!rows.length) return 0;
+
+  const { data, error } = await supabase
+    .from('artists')
+    .upsert(rows, { onConflict: 'artist_key', ignoreDuplicates: true })
+    .select('id');
+
+  if (error) throw new Error(`[artist_seed] ${error.message}`);
+
+  return (data || []).length;
 }
 
 export async function linkAlbumTracks(albumId: string, trackIds: string[]): Promise<number> {

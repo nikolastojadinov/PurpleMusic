@@ -4,6 +4,7 @@ import type { ArtistBrowse } from '../../ytmusic/innertubeClient';
 
 export type Phase2Output = {
   artistKey: string;
+  artistId: string;
   browseId: string;
   albums: Array<{ externalId: string; title: string; thumbnailUrl: string | null; releaseDate: string | null; trackCount: number | null }>;
   playlists: Array<{ externalId: string; title: string; thumbnailUrl: string | null }>;
@@ -17,46 +18,44 @@ async function ingestArtistDescriptionIfEmpty(artistKey: string, description: st
   if (!trimmed) return false;
   const { data, error } = await supabase
     .from('artists')
-    .update({ artist_description: trimmed, updated_at: nowIso() })
+    .update({ description: trimmed, updated_at: nowIso() })
     .eq('artist_key', artistKey)
-    .is('artist_description', null)
+    .is('description', null)
     .select('artist_key')
     .maybeSingle();
   if (error) throw new Error(`[artist_description] ${error.message}`);
   return Boolean(data?.artist_key);
 }
 
-async function ingestTopSongs(artistKey: string, browse: ArtistBrowse): Promise<string[]> {
+async function ingestTopSongs(artistId: string, browse: ArtistBrowse): Promise<string[]> {
   const tracks = (browse.topSongs || []).map((t) => ({
-    youtubeId: t.videoId,
+    externalId: t.videoId,
     title: t.title,
-    artistNames: [browse.name || artistKey],
-    durationSeconds: toSeconds(t.duration),
-    thumbnailUrl: t.thumbnail,
+    durationSec: toSeconds(t.duration),
+    imageUrl: t.thumbnail,
     isVideo: true,
     source: 'artist_top_song',
   }));
-  const { idMap } = await upsertTracks(tracks, {});
-  const trackIds = Object.values(idMap);
-  if (trackIds.length) await linkArtistTracks(artistKey, trackIds);
+  const { map } = await upsertTracks(tracks);
+  const trackIds = Object.values(map);
+  if (trackIds.length) await linkArtistTracks(artistId, trackIds);
   return trackIds;
 }
 
-async function ingestArtistAlbums(artistKey: string, browse: ArtistBrowse) {
+async function ingestArtistAlbums(artistId: string, artistKey: string, browse: ArtistBrowse) {
   const albums = (browse.albums || []).map((a) => ({
     externalId: a.id,
     title: a.title,
     thumbnailUrl: a.thumbnail,
     releaseDate: a.year ? `${a.year}-01-01` : null,
     albumType: null,
-    artistKey,
     trackCount: a.trackCount ?? null,
   }));
-  const { map } = await upsertAlbums(albums);
+  const { map } = await upsertAlbums(albums, artistId);
   return { albums, albumIdMap: map };
 }
 
-async function ingestArtistPlaylists(artistKey: string, browse: ArtistBrowse) {
+async function ingestArtistPlaylists(artistId: string, browse: ArtistBrowse) {
   const playlists = (browse.playlists || []).map((p) => ({
     externalId: p.id,
     title: p.title,
@@ -66,18 +65,18 @@ async function ingestArtistPlaylists(artistKey: string, browse: ArtistBrowse) {
     itemCount: null,
   }));
   const { map } = await upsertPlaylists(playlists);
-  if (Object.values(map).length) await linkArtistPlaylists(artistKey, Object.values(map));
+  if (Object.values(map).length) await linkArtistPlaylists(artistId, Object.values(map));
   return { playlists, playlistIdMap: map };
 }
 
-export async function runPhase2Metadata(params: { artistKey: string; browseId: string; artistBrowse: ArtistBrowse }): Promise<Phase2Output> {
+export async function runPhase2Metadata(params: { artistId: string; artistKey: string; browseId: string; artistBrowse: ArtistBrowse }): Promise<Phase2Output> {
   const started = Date.now();
   console.info('[ingest][phase2_metadata] phase_start', { artist_key: params.artistKey, browse_id: params.browseId, at: nowIso() });
 
   const descPromise = ingestArtistDescriptionIfEmpty(params.artistKey, params.artistBrowse.description);
-  const topSongsPromise = ingestTopSongs(params.artistKey, params.artistBrowse);
-  const albumPromise = ingestArtistAlbums(params.artistKey, params.artistBrowse);
-  const playlistPromise = ingestArtistPlaylists(params.artistKey, params.artistBrowse);
+  const topSongsPromise = ingestTopSongs(params.artistId, params.artistBrowse);
+  const albumPromise = ingestArtistAlbums(params.artistId, params.artistKey, params.artistBrowse);
+  const playlistPromise = ingestArtistPlaylists(params.artistId, params.artistBrowse);
 
   const [descResult, topSongsResult, albumResult, playlistResult] = await Promise.allSettled([
     descPromise,
@@ -103,5 +102,14 @@ export async function runPhase2Metadata(params: { artistKey: string; browseId: s
     description_written: descResult.status === 'fulfilled' ? descResult.value : false,
   });
 
-  return { artistKey: params.artistKey, browseId: params.browseId, albums, playlists, topTrackIds, albumIdMap, playlistIdMap };
+  return {
+    artistKey: params.artistKey,
+    artistId: params.artistId,
+    browseId: params.browseId,
+    albums,
+    playlists,
+    topTrackIds,
+    albumIdMap,
+    playlistIdMap,
+  };
 }

@@ -6,6 +6,7 @@ import {
   linkPlaylistTracks,
   normalize,
   nowIso,
+  seedArtistsFromNames,
   toSeconds,
   upsertTracks,
 } from '../utils';
@@ -27,50 +28,62 @@ function orderedTrackIds(tracks: Array<{ videoId: string }>, idMap: Record<strin
     .filter(Boolean);
 }
 
-async function ingestSingleAlbum(artistKey: string, externalId: string, albumIdMap: Record<string, string>): Promise<{ tracks: number }> {
+async function ingestSingleAlbum(
+  artistId: string,
+  artistKey: string,
+  externalId: string,
+  albumIdMap: Record<string, string>,
+): Promise<{ tracks: number }> {
   const albumBrowse = await fetchAlbumBrowse(externalId);
   if (!albumBrowse) return { tracks: 0 };
 
   const tracks = (albumBrowse.tracks || []).map((t) => ({
-    youtubeId: t.videoId,
+    externalId: t.videoId,
     title: t.title,
-    artistNames: [artistKey],
-    durationSeconds: toSeconds(t.duration),
-    thumbnailUrl: t.thumbnail,
-    albumExternalId: albumBrowse.browseId,
+    durationSec: toSeconds(t.duration),
+    imageUrl: t.thumbnail,
     isVideo: true,
     source: 'album',
   }));
-  const { idMap } = await upsertTracks(tracks, albumIdMap);
-  const ordered = orderedTrackIds(albumBrowse.tracks, idMap);
+  const { map } = await upsertTracks(tracks);
+  const ordered = orderedTrackIds(albumBrowse.tracks, map);
   const albumId = albumIdMap[normalize(albumBrowse.browseId)] || albumIdMap[externalId];
   if (albumId && ordered.length) await linkAlbumTracks(albumId, ordered);
-  if (ordered.length) await linkArtistTracks(artistKey, ordered);
+  if (ordered.length) await linkArtistTracks(artistId, ordered);
   return { tracks: ordered.length };
 }
 
-async function ingestSinglePlaylist(artistKey: string, externalId: string, playlistIdMap: Record<string, string>): Promise<{ tracks: number }> {
+async function ingestSinglePlaylist(
+  artistId: string,
+  artistKey: string,
+  externalId: string,
+  playlistIdMap: Record<string, string>,
+): Promise<{ tracks: number; artistNames: string[] }> {
   const playlistBrowse = await fetchPlaylistBrowse(externalId);
-  if (!playlistBrowse) return { tracks: 0 };
+  if (!playlistBrowse) return { tracks: 0, artistNames: [] };
+
+  const artistNames = (playlistBrowse.tracks || [])
+    .map((t) => t.artist)
+    .filter((name): name is string => Boolean(name));
 
   const tracks = (playlistBrowse.tracks || []).map((t) => ({
-    youtubeId: t.videoId,
+    externalId: t.videoId,
     title: t.title,
-    artistNames: [t.artist || artistKey],
-    durationSeconds: toSeconds(t.duration),
-    thumbnailUrl: t.thumbnail,
+    durationSec: toSeconds(t.duration),
+    imageUrl: t.thumbnail,
     isVideo: true,
     source: 'playlist',
   }));
-  const { idMap } = await upsertTracks(tracks, {});
-  const ordered = orderedTrackIds(playlistBrowse.tracks, idMap);
+  const { map } = await upsertTracks(tracks);
+  const ordered = orderedTrackIds(playlistBrowse.tracks, map);
   const playlistId = playlistIdMap[normalize(playlistBrowse.browseId)] || playlistIdMap[externalId];
   if (playlistId && ordered.length) await linkPlaylistTracks(playlistId, ordered);
-  if (ordered.length) await linkArtistTracks(artistKey, ordered);
-  return { tracks: ordered.length };
+  if (ordered.length) await linkArtistTracks(artistId, ordered);
+  return { tracks: ordered.length, artistNames };
 }
 
 export async function runPhase3Expansion(params: {
+  artistId: string;
   artistKey: string;
   albumIds: string[];
   playlistIds: string[];
@@ -92,7 +105,7 @@ export async function runPhase3Expansion(params: {
   const albumResults = await Promise.allSettled(
     params.albumIds.map((albumId) =>
       albumLimiter(async () => {
-        const result = await ingestSingleAlbum(params.artistKey, albumId, params.albumIdMap);
+        const result = await ingestSingleAlbum(params.artistId, params.artistKey, albumId, params.albumIdMap);
         return result.tracks;
       }),
     ),
@@ -101,8 +114,8 @@ export async function runPhase3Expansion(params: {
   const playlistResults = await Promise.allSettled(
     params.playlistIds.map((playlistId) =>
       playlistLimiter(async () => {
-        const result = await ingestSinglePlaylist(params.artistKey, playlistId, params.playlistIdMap);
-        return result.tracks;
+        const result = await ingestSinglePlaylist(params.artistId, params.artistKey, playlistId, params.playlistIdMap);
+        return result;
       }),
     ),
   );
@@ -111,14 +124,25 @@ export async function runPhase3Expansion(params: {
   const playlistsIngested = playlistResults.filter((r) => r.status === 'fulfilled').length;
   const trackCount =
     albumResults.reduce((acc, cur) => (cur.status === 'fulfilled' ? acc + cur.value : acc), 0) +
-    playlistResults.reduce((acc, cur) => (cur.status === 'fulfilled' ? acc + cur.value : acc), 0);
+    playlistResults.reduce((acc, cur) => (cur.status === 'fulfilled' ? acc + cur.value.tracks : acc), 0);
+
+  const seededNames: string[] = [];
 
   albumResults.forEach((r, idx) => {
     if (r.status === 'rejected') errors.push(`album:${params.albumIds[idx]}:${r.reason}`);
   });
   playlistResults.forEach((r, idx) => {
-    if (r.status === 'rejected') errors.push(`playlist:${params.playlistIds[idx]}:${r.reason}`);
+    if (r.status === 'rejected') {
+      errors.push(`playlist:${params.playlistIds[idx]}:${r.reason}`);
+    } else {
+      seededNames.push(...r.value.artistNames);
+    }
   });
+
+  if (seededNames.length) {
+    const inserted = await seedArtistsFromNames(seededNames);
+    console.info('[ingest][phase3_expansion][seed-artists]', { inserted, from: 'playlists' });
+  }
 
   console.info('[ingest][phase3_expansion] phase_complete', {
     artist_key: params.artistKey,

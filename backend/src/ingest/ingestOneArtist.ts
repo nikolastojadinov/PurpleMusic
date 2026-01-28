@@ -10,6 +10,7 @@ export type IngestOneArtistParams = {
 
 export type IngestOneArtistResult = {
   artistKey: string;
+  artistId: string;
   browseId: string;
   totalDurationMs: number;
   errors: string[];
@@ -22,12 +23,18 @@ export async function ingestOneArtist(params: IngestOneArtistParams): Promise<In
   console.info('[ingest][artist] start', { browse_id: params.browseId, at: nowIso() });
 
   const phase1 = await runPhase1Core({ browseId: params.browseId, requestedArtistKey: params.requestedArtistKey });
-  const phase2 = await runPhase2Metadata({ artistKey: phase1.artistKey, browseId: phase1.browseId, artistBrowse: phase1.artistBrowse });
+  const phase2 = await runPhase2Metadata({
+    artistId: phase1.artistId,
+    artistKey: phase1.artistKey,
+    browseId: phase1.browseId,
+    artistBrowse: phase1.artistBrowse,
+  });
 
   const albumIds = phase2.albums.map((a) => a.externalId);
   const playlistIds = phase2.playlists.map((p) => p.externalId);
 
   const phase3 = await runPhase3Expansion({
+    artistId: phase1.artistId,
     artistKey: phase1.artistKey,
     albumIds,
     playlistIds,
@@ -47,5 +54,5 @@ export async function ingestOneArtist(params: IngestOneArtistParams): Promise<In
     track_count: phase3.trackCount,
   });
 
-  return { artistKey: phase1.artistKey, browseId: phase1.browseId, totalDurationMs, errors };
+  return { artistKey: phase1.artistKey, artistId: phase1.artistId, browseId: phase1.browseId, totalDurationMs, errors };
 }

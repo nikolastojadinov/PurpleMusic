@@ -3,6 +3,7 @@ import { fetchArtistBrowse, type ArtistBrowse } from '../../ytmusic/innertubeCli
 
 export type Phase1Output = {
   artistKey: string;
+  artistId: string;
   browseId: string;
   artistBrowse: ArtistBrowse;
 };
@@ -19,17 +20,18 @@ export async function runPhase1Core(params: { browseId: string; requestedArtistK
 
   const artistKey = canonicalArtistKey(params.requestedArtistKey || artistBrowse.name, artistBrowse.channelId);
 
-  await upsertArtist({
-    artist_key: artistKey,
-    display_name: artistBrowse.name,
-    artist: artistBrowse.name,
-    youtube_channel_id: artistBrowse.channelId,
-    artist_description: artistBrowse.description,
+  const artistResult = await upsertArtist({
+    artistKey,
+    name: artistBrowse.name,
+    displayName: artistBrowse.name,
+    youtubeChannelId: artistBrowse.channelId,
+    description: artistBrowse.description,
     thumbnails: artistBrowse.thumbnails,
+    source: 'ingest',
   });
 
   const duration = Date.now() - started;
   console.info('[ingest][phase1_core] phase_complete', { artist_key: artistKey, browse_id: browseId, duration_ms: duration });
 
-  return { artistKey, browseId, artistBrowse };
+  return { artistKey: artistResult.artistKey, artistId: artistResult.id, browseId, artistBrowse };
 }
