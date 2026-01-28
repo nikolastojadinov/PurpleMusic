@@ -1166,5 +1166,9 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
 
   const tracks = parsePlaylistBrowseTracks(browseJson, browseId);
 
+  if (!tracks.length) {
+    console.error("[DEBUG][raw_innertube_response]", JSON.stringify(browseJson, null, 2));
+  }
+
   return { playlistId, title, subtitle, thumbnailUrl, tracks };
 }
