@@ -1168,6 +1168,7 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
 
     if (!tracks.length) {
       console.error("[DEBUG][raw_innertube_response]", JSON.stringify(raw, null, 2));
+      console.error("[DEBUG][empty_tracks_raw]", JSON.stringify(raw, null, 2));
   }
 
   return { playlistId, title, subtitle, thumbnailUrl, tracks };

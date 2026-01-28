@@ -37,6 +37,27 @@ export type Phase3Output = {
 
 const CONCURRENCY = 3;
 
+function shouldSkipRadioMix(externalIdRaw: string): boolean {
+  const externalId = normalize(externalIdRaw).toUpperCase();
+  return externalId.includes('RDCLAK') || externalId.startsWith('RD');
+}
+
+function normalizePlaylistId(externalIdRaw: string): { valid: boolean; id: string } {
+  const externalId = normalize(externalIdRaw);
+  if (!externalId) return { valid: false, id: '' };
+
+  const upper = externalId.toUpperCase();
+
+  if (upper.startsWith('VLPL')) return { valid: true, id: externalId };
+  if (upper.startsWith('MPRE')) return { valid: true, id: externalId };
+  if (upper.startsWith('OLAK5UY')) return { valid: true, id: externalId };
+
+  // Plain playlist ids should be prefixed with VL for browse.
+  if (upper.startsWith('PL')) return { valid: true, id: `VL${upper}` };
+
+  return { valid: false, id: '' };
+}
+
 function pickBestThumbnail(thumbnails?: any): string | null {
   const arr = Array.isArray(thumbnails) ? thumbnails : thumbnails?.thumbnails;
   if (!Array.isArray(arr) || arr.length === 0) return null;
@@ -74,15 +95,27 @@ function orderedTrackIds(tracks: PlaylistBrowse['tracks'], idMap: IdMap): string
 }
 
 async function ingestAlbum(artistId: string, album: AlbumInput, albumIdMap: IdMap): Promise<{ fetched: number; inserted: number; linked: number }> {
-  const browse = await browsePlaylistById(album.externalId);
+  if (shouldSkipRadioMix(album.externalId)) {
+    console.warn('[phase3] skipping radio mix playlist', { externalId: album.externalId });
+    return { fetched: 0, inserted: 0, linked: 0 };
+  }
+
+  const normalized = normalizePlaylistId(album.externalId);
+  if (!normalized.valid) {
+    console.warn('[phase3] skipping unsupported playlist id', { externalId: album.externalId });
+    return { fetched: 0, inserted: 0, linked: 0 };
+  }
+
+  const browseId = normalized.id;
+  const browse = await browsePlaylistById(browseId);
   if (!browse || !Array.isArray(browse.tracks)) {
-    console.info('[phase3][album]', { externalId: album.externalId, fetchedTracks: 0, insertedTracks: 0, linkedAlbumTracks: 0, browseId: album.externalId });
+    console.info('[phase3][album]', { externalId: album.externalId, fetchedTracks: 0, insertedTracks: 0, linkedAlbumTracks: 0, browseId });
     return { fetched: 0, inserted: 0, linked: 0 };
   }
 
   const tracks = browse.tracks || [];
   if (!tracks.length) {
-    console.info('[phase3][album]', { externalId: album.externalId, fetchedTracks: 0, insertedTracks: 0, linkedAlbumTracks: 0, browseId: album.externalId });
+    console.info('[phase3][album]', { externalId: album.externalId, fetchedTracks: 0, insertedTracks: 0, linkedAlbumTracks: 0, browseId });
     return { fetched: 0, inserted: 0, linked: 0 };
   }
 
@@ -90,7 +123,7 @@ async function ingestAlbum(artistId: string, album: AlbumInput, albumIdMap: IdMa
   const { map } = await upsertTracks(trackInputs);
   const ordered = orderedTrackIds(tracks, map);
 
-  const albumId = albumIdMap[normalize(album.externalId)];
+  const albumId = albumIdMap[normalize(browseId)];
   let linkedAlbumTracks = 0;
   if (albumId && ordered.length) {
     linkedAlbumTracks = await linkAlbumTracks(albumId, ordered);
@@ -111,7 +144,19 @@ async function ingestAlbum(artistId: string, album: AlbumInput, albumIdMap: IdMa
 }
 
 async function ingestPlaylist(artistId: string, playlist: PlaylistInput, playlistIdMap: IdMap): Promise<{ fetched: number; inserted: number; linked: number }> {
-  const browse = await browsePlaylistById(playlist.externalId);
+  if (shouldSkipRadioMix(playlist.externalId)) {
+    console.warn('[phase3] skipping radio mix playlist', { externalId: playlist.externalId });
+    return { fetched: 0, inserted: 0, linked: 0 };
+  }
+
+  const normalized = normalizePlaylistId(playlist.externalId);
+  if (!normalized.valid) {
+    console.warn('[phase3] skipping unsupported playlist id', { externalId: playlist.externalId });
+    return { fetched: 0, inserted: 0, linked: 0 };
+  }
+
+  const browseId = normalized.id;
+  const browse = await browsePlaylistById(browseId);
   if (!browse || !Array.isArray(browse.tracks)) {
     console.info('[phase3][playlist]', { externalId: playlist.externalId, fetchedTracks: 0, insertedTracks: 0, linkedPlaylistTracks: 0, browseId: playlist.externalId });
     return { fetched: 0, inserted: 0, linked: 0 };

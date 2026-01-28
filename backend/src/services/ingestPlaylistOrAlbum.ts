@@ -299,7 +299,7 @@ async function upsertAlbums(inputs: AlbumInput[]): Promise<{ map: IdMap; count: 
       title: a.title,
       thumbnail_url: a.thumbnailUrl,
       release_date: a.releaseDate,
-      album_type: a.albumType,
+      album_type: a.albumType ?? 'album',
       artist_key: a.artistKey,
       updated_at: NOW(),
     })),
