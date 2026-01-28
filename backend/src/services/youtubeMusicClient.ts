@@ -234,20 +234,32 @@ async function callYoutubei<T = any>(config: InnertubeConfig, path: string, payl
   const base = resolveApiBase(config);
   const url = `${base}${path}?prettyPrint=false&key=${encodeURIComponent(config.apiKey)}`;
 
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": YTM_USER_AGENT,
+    Origin: "https://music.youtube.com",
+    Referer: "https://music.youtube.com/search",
+    Cookie: CONSENT_COOKIES,
+    "X-Goog-Visitor-Id": config.visitorData,
+    "X-YouTube-Client-Name": "67",
+    "X-YouTube-Client-Version": config.clientVersion,
+  } as const;
+
+  try {
+    console.log("[debug][innertube_request]", {
+      url,
+      headers,
+      context: payload?.context,
+    });
+  } catch {
+    // ignore logging issues
+  }
+
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "Accept-Language": "en-US,en;q=0.9",
-      "User-Agent": YTM_USER_AGENT,
-      Origin: "https://music.youtube.com",
-      Referer: "https://music.youtube.com/search",
-      Cookie: CONSENT_COOKIES,
-      "X-Goog-Visitor-Id": config.visitorData,
-      "X-YouTube-Client-Name": "67",
-      "X-YouTube-Client-Version": config.clientVersion,
-    },
+    headers,
     body: JSON.stringify(payload),
   });
 
@@ -1143,57 +1155,36 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
   const config = await fetchInnertubeConfig();
   if (!config) return null;
 
-  const payload = {
+  const browseJson = await callYoutubei<any>(config, "browse", {
     context: buildSearchBody(config, "").context,
     browseId,
-  };
+  });
 
-  const headers = {
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    "User-Agent": YTM_USER_AGENT,
-    Origin: "https://music.youtube.com",
-    Referer: "https://music.youtube.com/search",
-    Cookie: CONSENT_COOKIES,
-    "X-Goog-Visitor-Id": config.visitorData,
-    "X-YouTube-Client-Name": "67",
-    "X-YouTube-Client-Version": config.clientVersion,
-  } as const;
-
-  console.error("[DEBUG][REQUEST_HEADERS]", headers);
-  console.error("[DEBUG][REQUEST_CONTEXT]", JSON.stringify(payload.context, null, 2));
-
-  const data = await callYoutubei<any>(config, "browse", payload);
-
-    try {
-      console.error("[DEBUG][browse_raw_full]", JSON.stringify(data, null, 2).slice(0, 12000));
-    } catch {
-      // non-fatal debug logging failure
-    }
-
-    if (DEBUG) {
-      console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(data || {}));
-      console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(data?.contents ?? null, null, 2));
+  try {
+    console.error("[DEBUG][RAW_BROWSE_JSON]", JSON.stringify(browseJson, null, 2).slice(0, 20000));
+    console.log("[debug][browsePlaylistById] keys:", Object.keys(browseJson || {}));
+    console.log("[debug] hasResponsiveTracks:", JSON.stringify(browseJson || {}).includes("musicResponsiveListItemRenderer"));
+  } catch {
+    // ignore logging issues
   }
 
-    if (!data) return null;
+  if (DEBUG) {
+    console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(browseJson || {}));
+    console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(browseJson?.contents ?? null, null, 2));
+  }
 
-    const header = data?.header?.musicDetailHeaderRenderer;
+  if (!browseJson) return null;
+
+  const header = browseJson?.header?.musicDetailHeaderRenderer;
   const title = pickText(header?.title) || playlistId;
   const subtitle = pickRunsText(header?.secondSubtitle?.runs) || "";
   const thumbnailUrl =
     pickThumbnail(header?.thumbnail?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails) ||
     pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
-      pickThumbnail(data?.background?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
+    pickThumbnail(browseJson?.background?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
     null;
 
-    const tracks = parsePlaylistBrowseTracks(data, browseId);
-
-    if (!tracks.length) {
-      console.error("[DEBUG][raw_innertube_response]", JSON.stringify(data, null, 2));
-      console.error("[DEBUG][empty_tracks_raw]", JSON.stringify(data, null, 2));
-  }
+  const tracks = parsePlaylistBrowseTracks(browseJson, browseId);
 
   return { playlistId, title, subtitle, thumbnailUrl, tracks };
 }
