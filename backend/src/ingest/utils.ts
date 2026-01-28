@@ -70,7 +70,6 @@ export async function upsertArtist(input: ArtistInput): Promise<{ id: string; ar
     view_count: input.viewCount ?? null,
     source: normalize(input.source) || 'ingest',
     updated_at: nowIso(),
-    created_at: nowIso(),
   };
 
   const { data, error } = await supabase
@@ -102,7 +101,6 @@ export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Prom
         thumbnails: a.thumbnails ?? null,
         source: normalize(a.source) || 'ingest',
         updated_at: now,
-        created_at: now,
       };
     })
     .filter(Boolean) as Array<Record<string, any>>;
@@ -139,10 +137,9 @@ export async function upsertPlaylists(inputs: PlaylistInput[]): Promise<{ map: I
         title: normalize(p.title) || externalId,
         description: normalize(p.description) || null,
         cover_url: p.coverUrl ?? null,
-        playlist_type: p.playlistType || 'artist',
+        playlist_type: 'artist',
         source: normalize(p.source) || 'ingest',
         updated_at: now,
-        created_at: now,
       };
     })
     .filter(Boolean) as Array<Record<string, any>>;
@@ -185,7 +182,6 @@ export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; 
         image_url: t.imageUrl ?? null,
         source: normalize(t.source) || 'ingest',
         updated_at: now,
-        created_at: now,
       };
     })
     .filter(Boolean) as Array<Record<string, any>>;
