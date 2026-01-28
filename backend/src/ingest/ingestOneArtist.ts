@@ -18,6 +18,11 @@ export type IngestOneArtistResult = {
   errors: string[];
 };
 
+function assertValidBrowseId(browseId: string): string {
+  if (/^UC[A-Za-z0-9_-]+$/.test(browseId)) return browseId;
+  throw new Error(`[ingest][artist] invalid browseId resolved: ${browseId}`);
+}
+
 export async function ingestOneArtist(params: IngestOneArtistParams): Promise<IngestOneArtistResult> {
   const started = Date.now();
   const errors: string[] = [];
@@ -30,36 +35,33 @@ export async function ingestOneArtist(params: IngestOneArtistParams): Promise<In
     requestedArtistKey: params.requestedArtistKey,
     youtubeChannelId: params.youtubeChannelId,
   });
+
+  const browseId = assertValidBrowseId(phase1.browseId);
+
   const phase2 = await runPhase2Metadata({
     artistId: phase1.artistId,
     artistKey: phase1.artistKey,
-    browseId: phase1.browseId,
+    browseId,
     artistBrowse: phase1.artistBrowse,
   });
-
-  const albumIds = phase2.albums.map((a) => a.externalId);
-  const playlistIds = phase2.playlists.map((p) => p.externalId);
 
   const phase3 = await runPhase3Expansion({
     artistId: phase1.artistId,
     artistKey: phase1.artistKey,
-    albumIds,
-    playlistIds,
-    albumIdMap: phase2.albumIdMap,
-    playlistIdMap: phase2.playlistIdMap,
+    albums: phase2.albums,
+    playlists: phase2.playlists,
+    topSongs: phase2.topSongs,
   });
-  errors.push(...phase3.errors);
 
   const totalDurationMs = Date.now() - started;
+
   console.info('[ingest][artist] complete', {
     artist_key: phase1.artistKey,
-    browse_id: phase1.browseId,
-    total_duration_ms: totalDurationMs,
-    errors,
-    album_count: albumIds.length,
-    playlist_count: playlistIds.length,
+    browse_id: browseId,
+    album_count: phase2.albums.length,
+    playlist_count: phase2.playlists.length,
     track_count: phase3.trackCount,
   });
 
-  return { artistKey: phase1.artistKey, artistId: phase1.artistId, browseId: phase1.browseId, totalDurationMs, errors };
+  return { artistKey: phase1.artistKey, artistId: phase1.artistId, browseId, totalDurationMs, errors };
 }

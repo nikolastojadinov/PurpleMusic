@@ -1,111 +1,92 @@
-import supabase from '../../lib/supabase';
-import { linkArtistPlaylists, linkArtistTracks, normalize, nowIso, toSeconds, upsertAlbums, upsertPlaylists, upsertTracks } from '../utils';
+import { normalize, toSeconds, upsertAlbums, upsertPlaylists, type AlbumInput, type PlaylistInput, type TrackInput, type IdMap } from '../utils';
 import type { ArtistBrowse } from '../../ytmusic/innertubeClient';
 
-export type Phase2Album = {
-  externalId: string;
-  title: string;
-  coverUrl: string | null;
-  albumType: 'album' | 'single' | 'ep';
-  trackCount: number | null;
-};
-
-export type Phase2Playlist = {
-  externalId: string;
-  title: string;
-  coverUrl: string | null;
-};
-
 export type Phase2Output = {
-  artistKey: string;
   artistId: string;
+  artistKey: string;
   browseId: string;
-  albums: Phase2Album[];
-  playlists: Phase2Playlist[];
-  topTrackIds: string[];
-  albumIdMap: Record<string, string>;
-  playlistIdMap: Record<string, string>;
+  albums: AlbumInput[];
+  playlists: PlaylistInput[];
+  topSongs: TrackInput[];
+  albumIdMap: IdMap;
+  playlistIdMap: IdMap;
 };
 
-function pickAlbumType(trackCount: number | null | undefined): 'album' | 'single' | 'ep' {
-  if (!Number.isFinite(trackCount)) return 'album';
+type RawAlbum = ArtistBrowse['albums'][number];
+type RawPlaylist = ArtistBrowse['playlists'][number];
+type RawTopSong = ArtistBrowse['topSongs'][number];
+
+function pickAlbumType(trackCount: number | null | undefined): 'album' | 'single' | 'ep' | null {
+  if (!Number.isFinite(trackCount)) return null;
   const count = Number(trackCount);
   if (count <= 3) return 'single';
   if (count <= 6) return 'ep';
   return 'album';
 }
 
-function pickCoverUrl(thumbnail: string | null | undefined): string | null {
-  const normalized = normalize(thumbnail);
-  return normalized || null;
+function pickCoverUrl(candidate?: string | null, thumbnailUrl?: string | null, thumbnails?: Array<{ url?: string }>): string | null {
+  const first = normalize(candidate);
+  if (first) return first;
+  const second = normalize(thumbnailUrl);
+  if (second) return second;
+  if (Array.isArray(thumbnails)) {
+    for (const thumb of thumbnails) {
+      const url = normalize((thumb as any)?.url);
+      if (url) return url;
+    }
+  }
+  return null;
 }
 
-function uniqueByExternalId<T extends { externalId: string }>(items: T[]): T[] {
+function dedupeByExternalId<T extends { externalId: string }>(items: T[]): T[] {
   const seen = new Set<string>();
   const result: T[] = [];
-  items.forEach((item) =>
-    item.externalId && !seen.has(item.externalId) ? (seen.add(item.externalId), result.push(item)) : null,
-  );
+  items.forEach((item) => {
+    const key = normalize(item.externalId);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    result.push({ ...item, externalId: key });
+  });
   return result;
 }
 
-async function ingestArtistDescriptionIfEmpty(artistKey: string, description: string | null): Promise<boolean> {
-  const trimmed = normalize(description);
-  if (!trimmed) return false;
-  const { data, error } = await supabase
-    .from('artists')
-    .update({ description: trimmed, updated_at: nowIso() })
-    .eq('artist_key', artistKey)
-    .is('description', null)
-    .select('artist_key')
-    .maybeSingle();
-  if (error) throw new Error(`[artist_description] ${error.message}`);
-  return Boolean(data?.artist_key);
-}
-
-async function ingestTopSongs(artistId: string, browse: ArtistBrowse): Promise<string[]> {
-  const tracks = (browse.topSongs || []).map((t) => ({
-    externalId: t.videoId,
-    title: t.title,
-    durationSec: toSeconds(t.duration),
-    imageUrl: t.thumbnail,
-    isVideo: true,
-    source: 'artist_top_song',
-  }));
-  const { map } = await upsertTracks(tracks);
-  const trackIds = Object.values(map);
-  if (trackIds.length) await linkArtistTracks(artistId, trackIds);
-  return trackIds;
-}
-
-async function ingestArtistAlbums(artistId: string, browse: ArtistBrowse) {
-  const albums: Phase2Album[] = uniqueByExternalId(
-    (browse.albums || []).map((a) => ({
-      externalId: normalize(a.id),
-      title: a.title,
-      coverUrl: pickCoverUrl(a.thumbnail),
-      albumType: pickAlbumType(a.trackCount ?? null),
-      trackCount: a.trackCount ?? null,
+function mapAlbums(raw: RawAlbum[]): AlbumInput[] {
+  return dedupeByExternalId(
+    (raw || []).map((album) => ({
+      externalId: album.id,
+      title: album.title,
+      albumType: pickAlbumType(album.trackCount ?? null),
+      coverUrl: pickCoverUrl((album as any)?.imageUrl, album.thumbnail, (album as any)?.thumbnails),
+      thumbnails: (album as any)?.thumbnails ?? null,
+      source: 'artist_browse',
     })),
-  ).filter((a) => Boolean(a.externalId));
-
-  const { map } = await upsertAlbums(albums, artistId);
-  return { albums, albumIdMap: map };
+  );
 }
 
-async function ingestArtistPlaylists(artistId: string, browse: ArtistBrowse) {
-  const playlists: Phase2Playlist[] = uniqueByExternalId(
-    (browse.playlists || []).map((p) => ({
-      externalId: normalize(p.id),
-      title: p.title,
-      coverUrl: pickCoverUrl(p.thumbnail),
+function mapPlaylists(raw: RawPlaylist[]): PlaylistInput[] {
+  return dedupeByExternalId(
+    (raw || []).map((playlist) => ({
+      externalId: playlist.id,
+      title: playlist.title,
+      coverUrl: pickCoverUrl((playlist as any)?.imageUrl, playlist.thumbnail, (playlist as any)?.thumbnails),
+      thumbnails: (playlist as any)?.thumbnails ?? null,
+      playlistType: 'artist',
+      source: 'artist_browse',
     })),
-  ).filter((p) => Boolean(p.externalId));
+  );
+}
 
-  const { map } = await upsertPlaylists(playlists);
-  const playlistIds = Object.values(map);
-  if (playlistIds.length) await linkArtistPlaylists(artistId, playlistIds);
-  return { playlists, playlistIdMap: map };
+function mapTopSongs(raw: RawTopSong[]): TrackInput[] {
+  return dedupeByExternalId(
+    (raw || []).map((song) => ({
+      externalId: song.videoId,
+      title: song.title,
+      durationSec: toSeconds(song.duration),
+      imageUrl: pickCoverUrl((song as any)?.imageUrl, song.thumbnail, (song as any)?.thumbnails),
+      isVideo: true,
+      source: 'artist_top_song',
+    })),
+  );
 }
 
 export async function runPhase2Metadata(params: {
@@ -114,45 +95,26 @@ export async function runPhase2Metadata(params: {
   browseId: string;
   artistBrowse: ArtistBrowse;
 }): Promise<Phase2Output> {
-  const started = Date.now();
-  console.info('[ingest][phase2_metadata] phase_start', { artist_key: params.artistKey, browse_id: params.browseId, at: nowIso() });
+  const albums = mapAlbums(params.artistBrowse.albums || []);
+  const playlists = mapPlaylists(params.artistBrowse.playlists || []);
+  const topSongs = mapTopSongs(params.artistBrowse.topSongs || []);
 
-  const descPromise = ingestArtistDescriptionIfEmpty(params.artistKey, params.artistBrowse.description);
-  const topSongsPromise = ingestTopSongs(params.artistId, params.artistBrowse);
-  const albumPromise = ingestArtistAlbums(params.artistId, params.artistBrowse);
-  const playlistPromise = ingestArtistPlaylists(params.artistId, params.artistBrowse);
+  const { map: albumIdMap } = await upsertAlbums(albums, params.artistId);
+  const { map: playlistIdMap } = await upsertPlaylists(playlists);
 
-  const [descResult, topSongsResult, albumResult, playlistResult] = await Promise.allSettled([
-    descPromise,
-    topSongsPromise,
-    albumPromise,
-    playlistPromise,
-  ]);
-
-  const albums = albumResult.status === 'fulfilled' ? albumResult.value.albums : [];
-  const playlists = playlistResult.status === 'fulfilled' ? playlistResult.value.playlists : [];
-  const topTrackIds = topSongsResult.status === 'fulfilled' ? topSongsResult.value : [];
-  const albumIdMap = albumResult.status === 'fulfilled' ? albumResult.value.albumIdMap : {};
-  const playlistIdMap = playlistResult.status === 'fulfilled' ? playlistResult.value.playlistIdMap : {};
-
-  const duration = Date.now() - started;
-  console.info('[ingest][phase2_metadata] phase_complete', {
-    artist_key: params.artistKey,
-    browse_id: params.browseId,
-    duration_ms: duration,
+  console.info('[phase2] extracted', {
     albums: albums.length,
     playlists: playlists.length,
-    top_tracks: topTrackIds.length,
-    description_written: descResult.status === 'fulfilled' ? descResult.value : false,
+    topSongs: topSongs.length,
   });
 
   return {
-    artistKey: params.artistKey,
     artistId: params.artistId,
+    artistKey: params.artistKey,
     browseId: params.browseId,
     albums,
     playlists,
-    topTrackIds,
+    topSongs,
     albumIdMap,
     playlistIdMap,
   };
