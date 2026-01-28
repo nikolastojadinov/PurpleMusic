@@ -1,5 +1,7 @@
 import supabase from '../lib/supabase';
 import { ingestOneArtist } from '../ingest/ingestOneArtist';
+import { resolveArtistBrowseIdByName } from '../ytmusic/innertubeClient';
+import { normalize } from '../ingest/utils';
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.floor(Math.max(ms, 0) / 1000);
@@ -21,8 +23,21 @@ export async function runNightlyArtistIngestOnce(): Promise<void> {
   console.info('[nightly-artist-ingest] candidate_selected', candidate);
 
   try {
+    let browseId = normalize(candidate.youtube_channel_id);
+    if (!browseId && candidate.name) {
+      browseId = normalize(await resolveArtistBrowseIdByName(candidate.name));
+      console.info('[nightly-artist-ingest] resolved_browse_id', { name: candidate.name, browseId });
+    }
+
+    const looksOfficialArtistId = (value: string) => /^(UC|MPLA)/i.test(value);
+    if (!browseId || !looksOfficialArtistId(browseId)) {
+      console.warn('[nightly-artist-ingest] skip_candidate_missing_browse', { artist_key: candidate.artist_key, name: candidate.name });
+      return;
+    }
+
     await ingestOneArtist({
-      browseId: candidate.youtube_channel_id || undefined,
+      browseId,
+      youtubeChannelId: browseId,
       artistName: candidate.name || undefined,
       requestedArtistKey: candidate.artist_key,
     });

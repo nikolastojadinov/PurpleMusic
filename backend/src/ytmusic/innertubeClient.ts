@@ -1,4 +1,3 @@
-import { Innertube, UniversalCache } from 'youtubei.js';
 import { normalize, toSeconds } from '../ingest/utils';
 
 export type YTMusicTrack = {
@@ -37,134 +36,437 @@ export type PlaylistBrowse = {
   tracks: YTMusicTrack[];
 };
 
-let clientPromise: Promise<Innertube> | null = null;
+const CONSENT_COOKIES =
+  'CONSENT=YES+1; SOCS=CAESHAgBEhIaZ29vZ2xlLmNvbS9jb25zZW50L2Jhc2ljLzIiDFNvaURtdXhSNVQ1ag==; PREF=f1=50000000&hl=en';
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.100 Safari/537.36';
+const API_BASE = 'https://music.youtube.com/youtubei/v1';
 
-async function getClient(): Promise<Innertube> {
-  if (!clientPromise) {
-    // youtubei typings do not expose a dedicated YTMUSIC client flag; we rely on defaults and suppress type noise.
-    clientPromise = Innertube.create({ cache: new UniversalCache(false) } as any);
-  }
-  return clientPromise;
+// Use the runtime fetch if available; typed as any to avoid DOM lib dependency.
+type FetchLike = (input: any, init?: any) => Promise<any>;
+const fetchFn: FetchLike = (globalThis as any).fetch;
+
+if (!fetchFn) {
+  throw new Error('Global fetch is required for innertube client');
 }
 
-export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrowse | null> {
-  const browseId = normalize(browseIdRaw);
-  if (!browseId) return null;
+type InnertubeConfig = {
+  apiKey: string;
+  clientName: string;
+  clientVersion: string;
+  visitorData: string;
+  apiBase: string;
+};
+
+let configPromise: Promise<InnertubeConfig> | null = null;
+
+function pickText(node: any): string {
+  if (!node) return '';
+  if (typeof node === 'string') return node.trim();
+  if (Array.isArray(node)) return pickText(node[0]);
+  const runs = node.runs;
+  if (Array.isArray(runs)) return pickText(runs[0]);
+  if (typeof node.text === 'string') return node.text.trim();
+  return '';
+}
+
+function pickThumbnail(thumbnails: any): string | null {
+  const arr = Array.isArray(thumbnails) ? thumbnails : thumbnails?.thumbnails;
+  if (!Array.isArray(arr)) return null;
+  for (const t of arr) {
+    const url = normalize((t as any)?.url);
+    if (url) return url;
+  }
+  return null;
+}
+
+function pickDescription(root: any): string | null {
+  const desc = root?.contents?.sectionListRenderer?.contents?.find((c: any) => c?.musicDescriptionShelfRenderer)?.musicDescriptionShelfRenderer;
+  const runs = desc?.description?.runs;
+  if (Array.isArray(runs)) {
+    const text = runs.map((r: any) => r?.text || '').join(' ').trim();
+    return text || null;
+  }
+  const shelf = root?.header?.musicImmersiveHeaderRenderer?.description;
+  const shelfRuns = shelf?.runs;
+  if (Array.isArray(shelfRuns)) {
+    const text = shelfRuns.map((r: any) => r?.text || '').join(' ').trim();
+    return text || null;
+  }
+  return null;
+}
+
+function buildContext(config: InnertubeConfig): any {
+  return {
+    client: {
+      clientName: config.clientName || 'WEB_REMIX',
+      clientVersion: config.clientVersion,
+      hl: 'en',
+      gl: 'US',
+      platform: 'DESKTOP',
+      visitorData: config.visitorData,
+      userAgent: USER_AGENT,
+      utcOffsetMinutes: 0,
+    },
+    user: { enableSafetyMode: false },
+    request: { internalExperimentFlags: [], sessionIndex: 0 },
+  };
+}
+
+async function loadInnertubeConfig(): Promise<InnertubeConfig> {
+  const urls = ['https://music.youtube.com/?hl=en&gl=US', 'https://www.youtube.com/?hl=en&gl=US'];
+  const headers = {
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'User-Agent': USER_AGENT,
+    Cookie: CONSENT_COOKIES,
+  };
+  const errors: string[] = [];
+
+  for (const url of urls) {
+    try {
+      const res = await fetchFn(url, { method: 'GET', headers });
+      if (!res?.ok) {
+        errors.push(`${url}:status_${res?.status ?? 'unknown'}`);
+        continue;
+      }
+      const html = await res.text();
+      const extracted = extractConfigFromHtml(html);
+      if (extracted.apiKey && extracted.clientName && extracted.clientVersion && extracted.visitorData) {
+        return {
+          apiKey: extracted.apiKey,
+          clientName: extracted.clientName,
+          clientVersion: extracted.clientVersion,
+          visitorData: extracted.visitorData,
+          apiBase: API_BASE,
+        };
+      }
+      errors.push(`${url}:missing_fields`);
+    } catch (err: any) {
+      errors.push(`${url}:${err?.message || 'fetch_failed'}`);
+    }
+  }
+
+  throw new Error(`innertube_config_failed:${errors.join('|')}`);
+}
+
+function extractConfigFromHtml(html: string): Partial<InnertubeConfig> {
+  const fields: Partial<InnertubeConfig> = {};
+
+  const ytcfgMatch = html.match(/ytcfg\.set\((\{[\s\S]*?\})\);/);
+  if (ytcfgMatch?.[1]) {
+    try {
+      const cfg = JSON.parse(ytcfgMatch[1]);
+      const ctx = cfg?.INNERTUBE_CONTEXT?.client || {};
+      fields.apiKey = cfg?.INNERTUBE_API_KEY;
+      fields.clientName = ctx?.clientName;
+      fields.clientVersion = ctx?.clientVersion;
+      fields.visitorData = ctx?.visitorData;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[innertube][ytcfg_parse_failed]', message);
+    }
+  }
+
+  const regexGrab = (key: string) => {
+    const m = html.match(new RegExp(`"${key}"\s*:\s*"([^"]+)"`));
+    return m?.[1];
+  };
+
+  fields.apiKey = fields.apiKey || regexGrab('INNERTUBE_API_KEY');
+  fields.clientName = fields.clientName || regexGrab('INNERTUBE_CLIENT_NAME');
+  fields.clientVersion = fields.clientVersion || regexGrab('INNERTUBE_CLIENT_VERSION');
+  fields.visitorData = fields.visitorData || regexGrab('VISITOR_DATA');
+
+  return fields;
+}
+
+async function getInnertubeConfig(): Promise<InnertubeConfig> {
+  if (!configPromise) {
+    configPromise = loadInnertubeConfig();
+  }
+  return configPromise;
+}
+
+async function callYoutubei<T>(path: string, payload: Record<string, any>, referer: string): Promise<T | null> {
+  const config = await getInnertubeConfig();
+  const url = `${config.apiBase.replace(/\/$/, '')}/${path}?prettyPrint=false&key=${encodeURIComponent(config.apiKey)}`;
   try {
-    const client = await getClient();
-    const artist: any = await (client as any).music.getArtist(browseId);
-    if (!artist) return null;
+    const res = await fetchFn(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent': USER_AGENT,
+        Origin: 'https://music.youtube.com',
+        Referer: referer,
+        Cookie: CONSENT_COOKIES,
+        'X-Goog-Visitor-Id': config.visitorData,
+        'X-YouTube-Client-Version': config.clientVersion,
+        'X-YouTube-Client-Name': '67',
+      },
+      body: JSON.stringify(payload),
+    });
 
-    const topSongs: YTMusicTrack[] = (artist?.songs?.results || [])
-      .map((song: any) => ({
-        videoId: normalize(song?.id),
-        title: normalize(song?.title) || 'Untitled',
-        artist: normalize(song?.artists?.[0]?.name) || normalize(artist?.name) || 'Unknown artist',
-        duration: toSeconds(song?.duration_seconds ?? song?.duration),
-        thumbnail: song?.thumbnails?.[0]?.url || null,
-      }))
-      .filter((t: YTMusicTrack) => t.videoId);
-
-    const albums = (artist?.albums?.results || []).map((al: any) => ({
-      id: normalize(al?.id),
-      title: normalize(al?.title) || 'Album',
-      year: normalize(al?.year) || null,
-      thumbnail: al?.thumbnails?.[0]?.url || null,
-      trackCount: Number.isFinite(al?.song_count) ? Number(al.song_count) : null,
-    })).filter((a: any) => a.id);
-
-    const playlists = (artist?.playlists?.results || []).map((pl: any) => ({
-      id: normalize(pl?.id),
-      title: normalize(pl?.title) || 'Playlist',
-      thumbnail: pl?.thumbnails?.[0]?.url || null,
-    })).filter((p: any) => p.id);
-
-    return {
-      browseId,
-      name: normalize((artist as any)?.name) || browseId,
-      description: typeof (artist as any)?.description === 'string' ? normalize((artist as any).description) : null,
-      channelId: normalize((artist as any)?.channel?.id) || browseId,
-      thumbnails: ((artist as any)?.thumbnails || []).map((t: any) => t?.url).filter(Boolean),
-      topSongs,
-      albums,
-      playlists,
-    };
+    if (!res?.ok) {
+      console.warn('[innertube][request_failed]', { path, status: res?.status });
+      return null;
+    }
+    const json = await res.json().catch(() => null);
+    return json as T | null;
   } catch (err: any) {
-    console.error('[ytmusic][artist_browse] failed', { browseId, message: err?.message || String(err) });
+    console.error('[innertube][request_error]', { path, message: err?.message || 'request_failed' });
     return null;
   }
+}
+
+function walkAll(root: any, visit: (node: any) => void): void {
+  const stack: any[] = [root];
+  const seen = new WeakSet<object>();
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    visit(node);
+    if (Array.isArray(node)) {
+      for (const item of node) stack.push(item);
+    } else {
+      for (const value of Object.values(node)) stack.push(value);
+    }
+  }
+}
+
+function extractArtistBrowseIdFromSearch(root: any): string | null {
+  let official: string | null = null;
+  const fallbacks: string[] = [];
+
+  walkAll(root, (node) => {
+    const nav = (node as any)?.navigationEndpoint?.browseEndpoint;
+    const browseId = normalize(nav?.browseId);
+    if (!browseId) return;
+    const pageType = nav?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType;
+    const isArtistPage = typeof pageType === 'string' && pageType.includes('ARTIST');
+    const isOfficialId = /^(UC|MPLA)/i.test(browseId);
+    if (isArtistPage && isOfficialId && !official) {
+      official = browseId;
+      return;
+    }
+    if (isArtistPage && !official) {
+      official = browseId;
+      return;
+    }
+    if (isOfficialId) fallbacks.push(browseId);
+  });
+
+  if (official) return official;
+  return fallbacks[0] || null;
+}
+
+function parseSongFromNode(node: any, fallbackArtist: string): YTMusicTrack | null {
+  const watch = node?.navigationEndpoint?.watchEndpoint || node?.watchEndpoint || node?.playlistPanelVideoRenderer;
+  const videoId = normalize(node?.videoId || watch?.videoId || node?.playlistPanelVideoRenderer?.videoId);
+  if (!videoId) return null;
+  const title =
+    normalize(pickText(node?.title)) ||
+    normalize(node?.playlistPanelVideoRenderer?.title?.runs?.[0]?.text) ||
+    normalize(node?.headline?.runs?.[0]?.text) ||
+    'Untitled';
+  const artist =
+    normalize(pickText(node?.subtitle)) ||
+    normalize(node?.longBylineText?.runs?.[0]?.text) ||
+    normalize(node?.shortBylineText?.runs?.[0]?.text) ||
+    fallbackArtist ||
+    'Unknown artist';
+  const durationRaw = pickText(node?.lengthText) || pickText(node?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text);
+  const duration = toSeconds(durationRaw);
+  const thumbnail = pickThumbnail(node?.thumbnail) || pickThumbnail(node?.thumbnailRenderer) || pickThumbnail(node?.thumbnailOverlays);
+  return { videoId, title: title || 'Untitled', artist: artist || 'Unknown artist', duration, thumbnail: thumbnail || null };
+}
+
+function parseSongsFromBrowse(root: any, artistName: string): YTMusicTrack[] {
+  const tracks: YTMusicTrack[] = [];
+  walkAll(root, (node) => {
+    if (node?.musicResponsiveListItemRenderer) {
+      const parsed = parseSongFromNode(node.musicResponsiveListItemRenderer, artistName);
+      if (parsed) tracks.push(parsed);
+    }
+    if (node?.playlistPanelVideoRenderer) {
+      const parsed = parseSongFromNode(node.playlistPanelVideoRenderer, artistName);
+      if (parsed) tracks.push(parsed);
+    }
+    if (node?.playlistVideoRenderer) {
+      const parsed = parseSongFromNode(node.playlistVideoRenderer, artistName);
+      if (parsed) tracks.push(parsed);
+    }
+  });
+
+  const seen = new Set<string>();
+  return tracks.filter((t) => {
+    if (seen.has(t.videoId)) return false;
+    seen.add(t.videoId);
+    return true;
+  });
+}
+
+function parseAlbumOrPlaylistFromTwoRow(node: any): { album?: { id: string; title: string; year: string | null; thumbnail: string | null }; playlist?: { id: string; title: string; thumbnail: string | null } } | null {
+  const nav = node?.navigationEndpoint?.browseEndpoint;
+  const browseId = normalize(nav?.browseId);
+  if (!browseId) return null;
+  const title = pickText(node?.title) || browseId;
+  const subtitle = pickText(node?.subtitle);
+  const thumb = pickThumbnail(node?.thumbnailRenderer) || pickThumbnail(node?.thumbnail);
+  const yearMatch = subtitle.match(/(20\d{2}|19\d{2})/);
+  const year = yearMatch ? yearMatch[1] : null;
+  const pageType = nav?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType;
+
+  if (typeof pageType === 'string' && pageType.includes('ALBUM')) {
+    return { album: { id: browseId, title: normalize(title) || 'Album', year, thumbnail: thumb || null } };
+  }
+
+  if (typeof pageType === 'string' && pageType.includes('PLAYLIST')) {
+    return { playlist: { id: browseId, title: normalize(title) || 'Playlist', thumbnail: thumb || null } };
+  }
+
+  if (/^MPRE/i.test(browseId)) {
+    return { album: { id: browseId, title: normalize(title) || 'Album', year, thumbnail: thumb || null } };
+  }
+
+  if (/^(VL|PL|OLAK)/i.test(browseId)) {
+    return { playlist: { id: browseId, title: normalize(title) || 'Playlist', thumbnail: thumb || null } };
+  }
+
+  return null;
+}
+
+function parseAlbumsAndPlaylists(root: any): { albums: ArtistBrowse['albums']; playlists: ArtistBrowse['playlists'] } {
+  const albums: ArtistBrowse['albums'] = [];
+  const playlists: ArtistBrowse['playlists'] = [];
+
+  walkAll(root, (node) => {
+    if (node?.musicTwoRowItemRenderer) {
+      const parsed = parseAlbumOrPlaylistFromTwoRow(node.musicTwoRowItemRenderer);
+      if (parsed?.album) albums.push({ ...parsed.album, trackCount: null });
+      if (parsed?.playlist) playlists.push(parsed.playlist);
+    }
+    if (node?.musicResponsiveListItemRenderer) {
+      const nav = node.musicResponsiveListItemRenderer?.navigationEndpoint?.browseEndpoint;
+      const browseId = normalize(nav?.browseId);
+      const pageType = nav?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType;
+      const title = pickText(node.musicResponsiveListItemRenderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text);
+      const thumb = pickThumbnail(node.musicResponsiveListItemRenderer?.thumbnail) || null;
+      if (browseId && typeof pageType === 'string' && pageType.includes('ALBUM')) {
+        albums.push({ id: browseId, title: normalize(title) || browseId, year: null, thumbnail: thumb, trackCount: null });
+      }
+      if (browseId && typeof pageType === 'string' && pageType.includes('PLAYLIST')) {
+        playlists.push({ id: browseId, title: normalize(title) || browseId, thumbnail: thumb });
+      }
+    }
+  });
+
+  const seenAlbums = new Set<string>();
+  const seenPlaylists = new Set<string>();
+
+  return {
+    albums: albums.filter((a) => {
+      if (!a.id || seenAlbums.has(a.id)) return false;
+      seenAlbums.add(a.id);
+      return true;
+    }),
+    playlists: playlists.filter((p) => {
+      if (!p.id || seenPlaylists.has(p.id)) return false;
+      seenPlaylists.add(p.id);
+      return true;
+    }),
+  };
 }
 
 export async function resolveArtistBrowseIdByName(nameRaw: string): Promise<string | null> {
   const name = normalize(nameRaw);
   if (!name) return null;
-  try {
-    const client = await getClient();
-    const search: any = await (client as any).music.search(name, { type: 'artists' });
-    const first = (search?.artists || [])[0];
-    const browseId = normalize(first?.browseId || first?.channelId || first?.id);
-    return browseId || null;
-  } catch (err: any) {
-    console.error('[ytmusic][artist_search] failed', { name, message: err?.message || String(err) });
-    return null;
-  }
+  const config = await getInnertubeConfig();
+  const payload = { context: buildContext(config), query: name };
+  const json = await callYoutubei<any>('search', payload, `https://music.youtube.com/search?q=${encodeURIComponent(name)}`);
+  if (!json) return null;
+  return extractArtistBrowseIdFromSearch(json);
+}
+
+export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrowse | null> {
+  const browseId = normalize(browseIdRaw);
+  if (!browseId) return null;
+  const config = await getInnertubeConfig();
+  const payload = { context: buildContext(config), browseId };
+  const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/channel/${encodeURIComponent(browseId)}`);
+  if (!json) return null;
+
+  const header = json?.header?.musicImmersiveHeaderRenderer || json?.header?.musicHeaderRenderer;
+  const name = normalize(pickText(header?.title)) || browseId;
+  const channelId = normalize(header?.subscriptionButton?.subscribeButtonRenderer?.channelId) || browseId;
+  const thumbnails = [pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail), pickThumbnail(header?.thumbnail)]
+    .filter(Boolean)
+    .map((t) => t as string);
+  const topSongs = parseSongsFromBrowse(json, name).slice(0, 10);
+  const { albums, playlists } = parseAlbumsAndPlaylists(json);
+  const description = pickDescription(json);
+
+  return {
+    browseId,
+    name,
+    description,
+    channelId: channelId || browseId,
+    thumbnails,
+    topSongs,
+    albums,
+    playlists,
+  };
 }
 
 export async function fetchAlbumBrowse(browseIdRaw: string): Promise<AlbumBrowse | null> {
   const browseId = normalize(browseIdRaw);
   if (!browseId) return null;
-  try {
-    const client = await getClient();
-    const album: any = await (client as any).music.getAlbum(browseId);
-    if (!album) return null;
+  const config = await getInnertubeConfig();
+  const payload = { context: buildContext(config), browseId };
+  const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`);
+  if (!json) return null;
 
-    const tracks: YTMusicTrack[] = (album?.tracks || []).map((track: any) => ({
-      videoId: normalize(track?.id),
-      title: normalize(track?.title) || 'Untitled',
-      artist: normalize(track?.artists?.[0]?.name) || normalize((album as any)?.artist) || 'Unknown artist',
-      duration: toSeconds(track?.duration_seconds ?? track?.duration),
-      thumbnail: track?.thumbnails?.[0]?.url || album?.thumbnails?.[0]?.url || null,
-    })).filter((t: YTMusicTrack) => t.videoId);
+  const header = json?.header?.musicDetailHeaderRenderer || json?.header?.musicTwoRowHeaderRenderer;
+  const title = normalize(pickText(header?.title)) || browseId;
+  const subtitle = pickText(header?.subtitle);
+  const yearMatch = subtitle.match(/(20\d{2}|19\d{2})/);
+  const releaseDate = yearMatch ? `${yearMatch[1]}-01-01` : null;
+  const thumbnail = pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail) || pickThumbnail(header?.thumbnail) || null;
+  const tracks = parseSongsFromBrowse(json, pickText(header?.subtitle)).map((t) => ({ ...t, artist: t.artist || pickText(header?.subtitle) }));
 
-    return {
-      browseId,
-      title: normalize((album as any)?.title) || browseId,
-      thumbnail: (album as any)?.thumbnails?.[0]?.url || null,
-      releaseDate: normalize((album as any)?.year) ? `${normalize((album as any).year)}-01-01` : null,
-      trackCount: Number.isFinite((album as any)?.song_count) ? Number((album as any).song_count) : tracks.length,
-      tracks,
-    };
-  } catch (err: any) {
-    console.error('[ytmusic][album_browse] failed', { browseId, message: err?.message || String(err) });
-    return null;
-  }
+  return {
+    browseId,
+    title,
+    thumbnail,
+    releaseDate,
+    trackCount: tracks.length || null,
+    tracks,
+  };
 }
 
 export async function fetchPlaylistBrowse(browseIdRaw: string): Promise<PlaylistBrowse | null> {
   const browseId = normalize(browseIdRaw);
   if (!browseId) return null;
-  try {
-    const client = await getClient();
-    const playlist: any = await (client as any).music.getPlaylist(browseId);
-    if (!playlist) return null;
+  const config = await getInnertubeConfig();
+  const payload = { context: buildContext(config), browseId };
+  const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`);
+  if (!json) return null;
 
-    const tracks: YTMusicTrack[] = (playlist?.videos || []).map((track: any) => ({
-      videoId: normalize(track?.id),
-      title: normalize(track?.title) || 'Untitled',
-      artist: normalize(track?.artists?.[0]?.name) || normalize((playlist as any)?.author?.name) || 'Unknown artist',
-      duration: toSeconds(track?.duration_seconds ?? track?.duration),
-      thumbnail: track?.thumbnails?.[0]?.url || playlist?.thumbnails?.[0]?.url || null,
-    })).filter((t: YTMusicTrack) => t.videoId);
+  const header = json?.header?.musicDetailHeaderRenderer || json?.header?.musicTwoRowHeaderRenderer;
+  const title = normalize(pickText(header?.title)) || browseId;
+  const subtitle = normalize(pickText(header?.subtitle)) || null;
+  const thumbnail = pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail) || pickThumbnail(header?.thumbnail) || null;
+  const tracks = parseSongsFromBrowse(json, subtitle || title);
 
-    return {
-      browseId,
-      title: normalize((playlist as any)?.title) || browseId,
-      subtitle: normalize((playlist as any)?.author?.name) || null,
-      thumbnail: (playlist as any)?.thumbnails?.[0]?.url || null,
-      tracks,
-    };
-  } catch (err: any) {
-    console.error('[ytmusic][playlist_browse] failed', { browseId, message: err?.message || String(err) });
-    return null;
-  }
+  return {
+    browseId,
+    title,
+    subtitle,
+    thumbnail,
+    tracks,
+  };
 }

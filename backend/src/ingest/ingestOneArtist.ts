@@ -7,6 +7,7 @@ export type IngestOneArtistParams = {
   browseId?: string;
   artistName?: string;
   requestedArtistKey?: string;
+  youtubeChannelId?: string;
 };
 
 export type IngestOneArtistResult = {
@@ -27,6 +28,7 @@ export async function ingestOneArtist(params: IngestOneArtistParams): Promise<In
     browseId: params.browseId,
     artistName: params.artistName,
     requestedArtistKey: params.requestedArtistKey,
+    youtubeChannelId: params.youtubeChannelId,
   });
   const phase2 = await runPhase2Metadata({
     artistId: phase1.artistId,

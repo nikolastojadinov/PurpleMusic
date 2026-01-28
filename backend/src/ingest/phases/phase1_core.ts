@@ -8,18 +8,36 @@ export type Phase1Output = {
   artistBrowse: ArtistBrowse;
 };
 
-export async function runPhase1Core(params: { browseId?: string; artistName?: string; requestedArtistKey?: string }): Promise<Phase1Output> {
+export async function runPhase1Core(params: {
+  browseId?: string;
+  artistName?: string;
+  requestedArtistKey?: string;
+  youtubeChannelId?: string;
+}): Promise<Phase1Output> {
   const started = Date.now();
-  const initialBrowseId = normalize(params.browseId);
+  const providedChannelId = normalize(params.youtubeChannelId);
+  const initialBrowseId = normalize(params.browseId || providedChannelId);
   const artistName = normalize(params.artistName);
 
   if (!initialBrowseId && !artistName) throw new Error('browseId or artistName is required for phase1');
 
+  const looksOfficialArtistId = (value: string) => /^(UC|MPLA)/i.test(value);
+
   let browseId = initialBrowseId;
+  if (browseId && !looksOfficialArtistId(browseId) && artistName) {
+    const resolved = await resolveArtistBrowseIdByName(artistName);
+    if (resolved) browseId = resolved;
+    console.info('[phase1_core] browse_id_normalized', { name: artistName, input: initialBrowseId, browseId: resolved });
+  }
+
   if (!browseId && artistName) {
     const resolved = await resolveArtistBrowseIdByName(artistName);
     browseId = resolved || '';
     console.info('[phase1_core] resolved_browse_id', { name: artistName, browseId: resolved });
+  }
+
+  if (!looksOfficialArtistId(browseId)) {
+    throw new Error('browseId must be an official channel or artist id');
   }
 
   if (!browseId) throw new Error('browseId resolution failed for phase1');
