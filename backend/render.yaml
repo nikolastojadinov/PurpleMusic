@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: purplemusic-backend
+    env: node
+    root: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
