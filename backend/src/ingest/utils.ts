@@ -143,11 +143,20 @@ export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Prom
     .map((a) => {
       const externalId = normalize(a.externalId);
       if (!externalId) return null;
+      const rawType = a.albumType;
+      const safeAlbumType = rawType === 'single' ? 'single' : rawType === 'ep' ? 'ep' : 'album';
+      if (rawType !== safeAlbumType) {
+        console.info('[phase2][album_type_defaulted]', {
+          external_id: externalId,
+          raw_type: rawType ?? null,
+          applied: safeAlbumType,
+        });
+      }
       return {
         external_id: externalId,
         artist_id: artistId,
         title: normalize(a.title) || externalId,
-        album_type: a.albumType ?? null,
+        album_type: safeAlbumType,
         cover_url: coalesceUrl(a.coverUrl),
         thumbnails: a.thumbnails ?? null,
         source: normalize(a.source) || DEFAULT_SOURCE,
