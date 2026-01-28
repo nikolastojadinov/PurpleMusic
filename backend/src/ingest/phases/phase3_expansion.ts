@@ -1,5 +1,5 @@
 import pLimit from 'p-limit';
-import { browsePlaylistById } from '../../ytmusic/innertubeClient';
+import { fetchAlbumBrowse, fetchPlaylistBrowse } from '../../ytmusic/innertubeClient';
 import {
   linkAlbumTracks,
   linkArtistTracks,
@@ -66,7 +66,7 @@ async function upsertAlbumsAndPlaylists(albums: AlbumInput[], playlists: Playlis
 }
 
 async function ingestAlbum(artistId: string, album: AlbumInput, albumIdMap: IdMap): Promise<number> {
-  const browse = await browsePlaylistById(album.externalId);
+  const browse = await fetchAlbumBrowse(album.externalId);
   if (!browse || !Array.isArray(browse.tracks) || !browse.tracks.length) return 0;
 
   const trackInputs = buildTrackInputs(browse.tracks, 'album');
@@ -81,7 +81,7 @@ async function ingestAlbum(artistId: string, album: AlbumInput, albumIdMap: IdMa
 }
 
 async function ingestPlaylist(artistId: string, playlist: PlaylistInput, playlistIdMap: IdMap): Promise<{ trackCount: number; trackIds: string[] }> {
-  const browse = await browsePlaylistById(playlist.externalId);
+  const browse = await fetchPlaylistBrowse(playlist.externalId);
   if (!browse || !Array.isArray(browse.tracks) || !browse.tracks.length) return { trackCount: 0, trackIds: [] };
 
   const trackInputs = buildTrackInputs(browse.tracks, 'playlist');
