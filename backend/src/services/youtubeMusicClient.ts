@@ -1148,6 +1148,12 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
     browseId,
   });
 
+    try {
+      console.error("[DEBUG][browse_raw_full]", JSON.stringify(raw, null, 2).slice(0, 12000));
+    } catch {
+      // non-fatal debug logging failure
+    }
+
   if (DEBUG) {
       console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(raw || {}));
       console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(raw?.contents ?? null, null, 2));
