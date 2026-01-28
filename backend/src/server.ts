@@ -1,9 +1,8 @@
 // target file: backend/src/server.ts
 //
 // FULL REWRITE
-// Adds a minimal /api/debug/browse endpoint directly in the main Express server
-// so we can inspect what youtubeMusicClient.browsePlaylistById() returns on Render.
-// This is required because Phase3 currently fetches 0 tracks for all albums/playlists.
+// Adds a minimal /api/debug/browse endpoint directly in Express
+// to inspect what browsePlaylistById() returns (Phase3 currently fetches 0 tracks).
 
 import express from "express";
 import supabase from "./lib/supabase";
@@ -24,13 +23,6 @@ app.get("/health", (_req, res) => {
  *
  * Example:
  *   GET /api/debug/browse?id=MPREb_JkRVr42eEZv
- *
- * Returns:
- * - trackCount
- * - firstTrackSample
- * - top-level keys from raw response
- *
- * This endpoint is ONLY for debugging ingestion issues (0 tracks fetched).
  */
 app.get("/api/debug/browse", async (req, res) => {
   const id = req.query.id as string;
@@ -45,12 +37,12 @@ app.get("/api/debug/browse", async (req, res) => {
   console.log("[debug] browse request", { id });
 
   try {
-    // Lazy import so server boots even if client has issues
-    const { youtubeMusicClient } = await import(
+    // Correct import: browsePlaylistById is a named export
+    const { browsePlaylistById } = await import(
       "./services/youtubeMusicClient"
     );
 
-    const raw = await youtubeMusicClient.browsePlaylistById(id);
+    const raw = await browsePlaylistById(id);
 
     return res.json({
       ok: true,
@@ -73,12 +65,11 @@ app.get("/api/debug/browse", async (req, res) => {
  * Start server
  */
 app.listen(port, () => {
-  // Supabase client is initialized on import for readiness; no calls yet.
   void supabase;
 
   console.log(`Server listening on port ${port}`);
 
-  // Run ingest once after deploy (temporary boot test)
+  // ONE-SHOT ingest after deploy (temporary test)
   setTimeout(async () => {
     console.log("[boot] running ONE-SHOT artist ingest after deploy...");
     try {
