@@ -1,17 +1,20 @@
+// PORTED FROM legacy hajde-music-stream:
+// file: https://raw.githubusercontent.com/nikolastojadinov/hajde-music-stream/main/backend/src/services/ingestPlaylistOrAlbum.ts
+// file: https://raw.githubusercontent.com/nikolastojadinov/hajde-music-stream/main/backend/src/services/youtubeMusicClient.ts
+// function(s): ingestPlaylistOrAlbum, browsePlaylistById
 import pLimit from 'p-limit';
-import { fetchAlbumBrowse, fetchPlaylistBrowse } from '../../ytmusic/innertubeClient';
+import { browsePlaylistById, type PlaylistBrowse } from '../../ytmusic/innertubeClient';
 import {
   linkAlbumTracks,
   linkArtistTracks,
   linkPlaylistTracks,
   normalize,
   toSeconds,
-  upsertAlbums,
-  upsertPlaylists,
   upsertTracks,
   type AlbumInput,
   type PlaylistInput,
   type TrackInput,
+  type IdMap,
 } from '../utils';
 
 export type Phase3Input = {
@@ -20,6 +23,10 @@ export type Phase3Input = {
   albums: AlbumInput[];
   playlists: PlaylistInput[];
   topSongs: TrackInput[];
+  albumIdMap: IdMap;
+  playlistIdMap: IdMap;
+  albumExternalIds: string[];
+  playlistExternalIds: string[];
 };
 
 export type Phase3Output = {
@@ -28,118 +35,158 @@ export type Phase3Output = {
   playlistsProcessed: number;
 };
 
-type IdMap = Record<string, string>;
-
 const CONCURRENCY = 3;
 
-function buildTrackInputs(tracks: Array<{ videoId: string; title: string; duration?: string | number | null; thumbnail?: string | null; artist?: string | null }>, source: 'album' | 'playlist'): TrackInput[] {
+function pickBestThumbnail(thumbnails?: any): string | null {
+  const arr = Array.isArray(thumbnails) ? thumbnails : thumbnails?.thumbnails;
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const scored = arr
+    .map((t: any) => {
+      const url = normalize(t?.url);
+      if (!url) return null;
+      const w = Number(t?.width) || 0;
+      const h = Number(t?.height) || 0;
+      const score = w && h ? w * h : w || h || 1;
+      return { url, score };
+    })
+    .filter(Boolean) as Array<{ url: string; score: number }>;
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0].url;
+}
+
+function buildTrackInputs(tracks: PlaylistBrowse['tracks'], source: 'album' | 'playlist'): TrackInput[] {
   return (tracks || []).map((t) => ({
     externalId: normalize(t.videoId),
     title: normalize(t.title) || 'Untitled',
-    durationSec: toSeconds((t as any)?.duration),
-    imageUrl: (t as any)?.thumbnail ?? null,
+    durationSec: toSeconds((t as any)?.duration ?? null),
+    imageUrl: pickBestThumbnail((t as any)?.thumbnail ?? (t as any)?.thumbnails ?? null),
     isVideo: true,
-    source,
+    source: 'ingest',
   }));
 }
 
-function orderedTrackIds(tracks: Array<{ videoId: string }>, idMap: IdMap): string[] {
-  const seen = new Set<string>();
-  const ordered: string[] = [];
-  (tracks || []).forEach((track) => {
-    const vid = normalize(track.videoId);
-    if (!vid) return;
-    const id = idMap[vid];
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    ordered.push(id);
+function orderedTrackIds(tracks: PlaylistBrowse['tracks'], idMap: IdMap): string[] {
+  return (tracks || [])
+    .map((t) => normalize(t.videoId))
+    .map((vid) => idMap[vid])
+    .filter(Boolean);
+}
+
+async function ingestAlbum(artistId: string, album: AlbumInput, albumIdMap: IdMap): Promise<{ fetched: number; inserted: number; linked: number }> {
+  const browse = await browsePlaylistById(album.externalId);
+  if (!browse || !Array.isArray(browse.tracks)) {
+    console.info('[phase3][album]', { externalId: album.externalId, fetchedTracks: 0, insertedTracks: 0, linkedAlbumTracks: 0, browseId: album.externalId });
+    return { fetched: 0, inserted: 0, linked: 0 };
+  }
+
+  const tracks = browse.tracks || [];
+  if (!tracks.length) {
+    console.info('[phase3][album]', { externalId: album.externalId, fetchedTracks: 0, insertedTracks: 0, linkedAlbumTracks: 0, browseId: album.externalId });
+    return { fetched: 0, inserted: 0, linked: 0 };
+  }
+
+  const trackInputs = buildTrackInputs(tracks, 'album');
+  const { map } = await upsertTracks(trackInputs);
+  const ordered = orderedTrackIds(tracks, map);
+
+  const albumId = albumIdMap[normalize(album.externalId)];
+  let linkedAlbumTracks = 0;
+  if (albumId && ordered.length) {
+    linkedAlbumTracks = await linkAlbumTracks(albumId, ordered);
+  }
+  let linkedArtistTracks = 0;
+  if (ordered.length) {
+    linkedArtistTracks = await linkArtistTracks(artistId, ordered);
+  }
+
+  console.info('[phase3][album]', {
+    externalId: album.externalId,
+    fetchedTracks: tracks.length,
+    insertedTracks: ordered.length,
+    linkedAlbumTracks,
   });
-  return ordered;
+
+  return { fetched: tracks.length, inserted: ordered.length, linked: linkedAlbumTracks + linkedArtistTracks };
 }
 
-async function upsertAlbumsAndPlaylists(albums: AlbumInput[], playlists: PlaylistInput[], artistId: string): Promise<{ albumIdMap: IdMap; playlistIdMap: IdMap }> {
-  const [{ map: albumIdMap }, { map: playlistIdMap }] = await Promise.all([
-    upsertAlbums(albums, artistId),
-    upsertPlaylists(playlists),
-  ]);
-  return { albumIdMap, playlistIdMap };
-}
+async function ingestPlaylist(artistId: string, playlist: PlaylistInput, playlistIdMap: IdMap): Promise<{ fetched: number; inserted: number; linked: number }> {
+  const browse = await browsePlaylistById(playlist.externalId);
+  if (!browse || !Array.isArray(browse.tracks)) {
+    console.info('[phase3][playlist]', { externalId: playlist.externalId, fetchedTracks: 0, insertedTracks: 0, linkedPlaylistTracks: 0, browseId: playlist.externalId });
+    return { fetched: 0, inserted: 0, linked: 0 };
+  }
 
-async function ingestAlbum(artistId: string, album: AlbumInput, albumIdMap: IdMap): Promise<number> {
-  const browse = await fetchAlbumBrowse(album.externalId);
-  if (!browse || !Array.isArray(browse.tracks) || !browse.tracks.length) return 0;
+  const tracks = browse.tracks || [];
+  if (!tracks.length) {
+    console.info('[phase3][playlist]', { externalId: playlist.externalId, fetchedTracks: 0, insertedTracks: 0, linkedPlaylistTracks: 0, browseId: playlist.externalId });
+    return { fetched: 0, inserted: 0, linked: 0 };
+  }
 
-  const trackInputs = buildTrackInputs(browse.tracks, 'album');
+  const trackInputs = buildTrackInputs(tracks, 'playlist');
   const { map } = await upsertTracks(trackInputs);
-  const ordered = orderedTrackIds(browse.tracks, map);
+  const ordered = orderedTrackIds(tracks, map);
 
-  const albumId = albumIdMap[normalize(album.externalId)] || albumIdMap[normalize((browse as any)?.browseId)];
-  if (albumId && ordered.length) await linkAlbumTracks(albumId, ordered);
-  if (ordered.length) await linkArtistTracks(artistId, ordered);
+  const playlistId = playlistIdMap[normalize(playlist.externalId)];
+  let linkedPlaylistTracks = 0;
+  if (playlistId && ordered.length) {
+    linkedPlaylistTracks = await linkPlaylistTracks(playlistId, ordered);
+  }
+  let linkedArtistTracks = 0;
+  if (ordered.length) {
+    linkedArtistTracks = await linkArtistTracks(artistId, ordered);
+  }
 
-  return ordered.length;
-}
+  console.info('[phase3][playlist]', {
+    externalId: playlist.externalId,
+    fetchedTracks: tracks.length,
+    insertedTracks: ordered.length,
+    linkedPlaylistTracks,
+  });
 
-async function ingestPlaylist(artistId: string, playlist: PlaylistInput, playlistIdMap: IdMap): Promise<{ trackCount: number; trackIds: string[] }> {
-  const browse = await fetchPlaylistBrowse(playlist.externalId);
-  if (!browse || !Array.isArray(browse.tracks) || !browse.tracks.length) return { trackCount: 0, trackIds: [] };
-
-  const trackInputs = buildTrackInputs(browse.tracks, 'playlist');
-  const { map } = await upsertTracks(trackInputs);
-  const ordered = orderedTrackIds(browse.tracks, map);
-
-  const playlistId = playlistIdMap[normalize(playlist.externalId)] || playlistIdMap[normalize((browse as any)?.browseId)];
-  if (playlistId && ordered.length) await linkPlaylistTracks(playlistId, ordered);
-
-  return { trackCount: ordered.length, trackIds: ordered };
+  return { fetched: tracks.length, inserted: ordered.length, linked: linkedPlaylistTracks + linkedArtistTracks };
 }
 
 export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Output> {
   const limiter = pLimit(CONCURRENCY);
 
-  const { albumIdMap, playlistIdMap } = await upsertAlbumsAndPlaylists(params.albums, params.playlists, params.artistId);
+  const albumTasks = params.albums.map((album) => limiter(() => ingestAlbum(params.artistId, album, params.albumIdMap)));
+  const playlistTasks = params.playlists.map((playlist) => limiter(() => ingestPlaylist(params.artistId, playlist, params.playlistIdMap)));
 
-  const albumTasks = params.albums.map((album) => limiter(() => ingestAlbum(params.artistId, album, albumIdMap)));
-  const playlistTasks = params.playlists.map((playlist) => limiter(() => ingestPlaylist(params.artistId, playlist, playlistIdMap)));
+  const albumResults = await Promise.all(albumTasks);
+  const playlistResults = await Promise.all(playlistTasks);
 
-  const albumResults = await Promise.allSettled(albumTasks);
-  const playlistResults = await Promise.allSettled(playlistTasks);
+  let totalFetchedTracks = 0;
+  let totalTracksInserted = 0;
 
-  let trackCount = 0;
-  albumResults.forEach((result) => {
-    if (result.status === 'fulfilled') trackCount += result.value;
+  albumResults.forEach((r) => {
+    totalFetchedTracks += r.fetched;
+    totalTracksInserted += r.inserted;
   });
-
-  const playlistTrackIds: string[] = [];
-  playlistResults.forEach((result) => {
-    if (result.status === 'fulfilled') {
-      trackCount += result.value.trackCount;
-      playlistTrackIds.push(...result.value.trackIds);
-    }
+  playlistResults.forEach((r) => {
+    totalFetchedTracks += r.fetched;
+    totalTracksInserted += r.inserted;
   });
 
   if (params.topSongs?.length) {
     const { map } = await upsertTracks(params.topSongs);
     const ids = Object.values(map);
-    if (ids.length) await linkArtistTracks(params.artistId, ids);
-    trackCount += ids.length;
-  }
-
-  const combinedArtistTrackIds = Array.from(new Set<string>(playlistTrackIds));
-  if (combinedArtistTrackIds.length) {
-    await linkArtistTracks(params.artistId, combinedArtistTrackIds);
+    if (ids.length) {
+      await linkArtistTracks(params.artistId, ids);
+      totalTracksInserted += ids.length;
+    }
   }
 
   console.info('[phase3] expansion_complete', {
     albumsProcessed: params.albums.length,
     playlistsProcessed: params.playlists.length,
-    totalTracksInserted: trackCount,
+    totalFetchedTracks,
+    totalTracksInserted,
   });
 
   return {
-    trackCount,
+    trackCount: totalTracksInserted,
     albumsProcessed: params.albums.length,
     playlistsProcessed: params.playlists.length,
   };
 }
-

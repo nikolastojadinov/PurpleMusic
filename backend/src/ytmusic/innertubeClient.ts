@@ -470,3 +470,8 @@ export async function fetchPlaylistBrowse(browseIdRaw: string): Promise<Playlist
     tracks,
   };
 }
+
+// Backwards-compatible helper matching legacy browsePlaylistById API.
+export async function browsePlaylistById(playlistIdRaw: string): Promise<PlaylistBrowse | null> {
+  return fetchPlaylistBrowse(playlistIdRaw);
+}

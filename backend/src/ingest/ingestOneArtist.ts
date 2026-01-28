@@ -1,3 +1,6 @@
+// PORTED FROM legacy hajde-music-stream:
+// file: https://raw.githubusercontent.com/nikolastojadinov/hajde-music-stream/main/backend/src/services/fullArtistIngest.ts
+// function(s): runFullArtistIngest
 import { runPhase1Core } from './phases/phase1_core';
 import { runPhase2Metadata } from './phases/phase2_metadata';
 import { runPhase3Expansion } from './phases/phase3_expansion';
@@ -18,9 +21,9 @@ export type IngestOneArtistResult = {
   errors: string[];
 };
 
-function assertValidBrowseId(browseId: string): string {
+function requireUcBrowseId(browseId: string): string {
   if (/^UC[A-Za-z0-9_-]+$/.test(browseId)) return browseId;
-  throw new Error(`[ingest][artist] invalid browseId resolved: ${browseId}`);
+  throw new Error(`[ingest][artist] invalid browseId ${browseId}`);
 }
 
 export async function ingestOneArtist(params: IngestOneArtistParams): Promise<IngestOneArtistResult> {
@@ -36,7 +39,8 @@ export async function ingestOneArtist(params: IngestOneArtistParams): Promise<In
     youtubeChannelId: params.youtubeChannelId,
   });
 
-  const browseId = assertValidBrowseId(phase1.browseId);
+  const browseId = requireUcBrowseId(phase1.browseId);
+  console.info('[ingest][artist] browse_resolved', { browse_id: browseId });
 
   const phase2 = await runPhase2Metadata({
     artistId: phase1.artistId,
@@ -51,6 +55,10 @@ export async function ingestOneArtist(params: IngestOneArtistParams): Promise<In
     albums: phase2.albums,
     playlists: phase2.playlists,
     topSongs: phase2.topSongs,
+    albumIdMap: phase2.albumIdMap,
+    playlistIdMap: phase2.playlistIdMap,
+    albumExternalIds: phase2.albumExternalIds,
+    playlistExternalIds: phase2.playlistExternalIds,
   });
 
   const totalDurationMs = Date.now() - started;
