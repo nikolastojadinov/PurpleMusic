@@ -1,40 +1,47 @@
 import supabase from '../lib/supabase';
 
-export type NormalizedArtist = {
-  key: string;
-  displayName: string;
-  channelId: string | null;
-};
-
-export type TrackInput = {
-  youtubeId: string;
-  title: string;
-  artistNames: string[];
-  durationSeconds: number | null;
-  thumbnailUrl: string | null;
-  albumExternalId?: string | null;
-  isVideo?: boolean;
-  source?: string;
-  isExplicit?: boolean | null;
+export type ArtistInput = {
+  artistKey: string;
+  name: string;
+  displayName?: string | null;
+  youtubeChannelId?: string | null;
+  description?: string | null;
+  imageUrl?: string | null;
+  thumbnails?: any;
+  subscriberCount?: number | null;
+  viewCount?: number | null;
+  source?: string | null;
 };
 
 export type AlbumInput = {
   externalId: string;
   title: string;
-  thumbnailUrl: string | null;
-  releaseDate: string | null;
-  albumType: string | null;
-  artistKey: string | null;
-  trackCount?: number | null;
+  albumType?: 'album' | 'single' | 'ep' | null;
+  releaseDate?: string | null;
+  coverUrl?: string | null;
+  thumbnails?: any;
+  source?: string | null;
+};
+
+export type TrackInput = {
+  externalId: string;
+  title: string;
+  durationSec?: number | null;
+  publishedAt?: string | null;
+  viewCount?: number | null;
+  likeCount?: number | null;
+  isVideo?: boolean;
+  imageUrl?: string | null;
+  source?: string | null;
 };
 
 export type PlaylistInput = {
   externalId: string;
   title: string;
-  description: string | null;
-  thumbnailUrl: string | null;
-  channelId: string | null;
-  itemCount?: number | null;
+  description?: string | null;
+  coverUrl?: string | null;
+  playlistType?: 'artist' | 'user' | 'editorial' | null;
+  source?: string | null;
 };
 
 export type IdMap = Record<string, string>;
@@ -43,77 +50,65 @@ export function normalize(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-export function canonicalArtistKey(name: string, channelId?: string | null): string {
-  const base = normalize(name).toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9 ]/g, '');
-  const compact = base.replace(/\s+/g, '-');
-  if (compact && channelId) return `${compact}-${normalize(channelId).toLowerCase()}`;
-  if (compact) return compact;
-  return (normalize(channelId) || 'artist').toLowerCase();
-}
-
 export function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function uniqueStrings(values: Array<string | null | undefined>): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  values.forEach((v) => {
-    const n = normalize(v).toLowerCase();
-    if (!n || seen.has(n)) return;
-    seen.add(n);
-    result.push(n);
-  });
-  return result;
-}
+export async function upsertArtist(input: ArtistInput): Promise<{ id: string; artistKey: string }> {
+  const artistKey = normalize(input.artistKey);
+  if (!artistKey) throw new Error('[artist_upsert] artistKey is required');
 
-export function toSeconds(raw: string | number | null | undefined): number | null {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw === 'number' && Number.isFinite(raw)) return Math.floor(raw);
-  const value = normalize(raw);
-  if (!value) return null;
-  if (/^\d+$/.test(value)) return Number.parseInt(value, 10);
-  const parts = value.split(':').map((p) => Number.parseInt(p, 10)).filter((n) => Number.isFinite(n));
-  if (!parts.length) return null;
-  return parts.reduce((acc, cur) => acc * 60 + cur, 0);
-}
-
-export async function upsertArtist(row: {
-  artist_key: string;
-  display_name: string;
-  artist: string;
-  youtube_channel_id: string | null;
-  artist_description?: string | null;
-  thumbnails?: any;
-}): Promise<void> {
   const payload = {
-    ...row,
-    normalized_name: normalize(row.artist),
+    artist_key: artistKey,
+    name: normalize(input.name) || artistKey,
+    display_name: normalize(input.displayName) || normalize(input.name) || artistKey,
+    youtube_channel_id: normalize(input.youtubeChannelId) || null,
+    description: normalize(input.description) || null,
+    image_url: normalize(input.imageUrl) || null,
+    thumbnails: input.thumbnails ?? null,
+    subscriber_count: input.subscriberCount ?? null,
+    view_count: input.viewCount ?? null,
+    source: normalize(input.source) || 'ingest',
     updated_at: nowIso(),
     created_at: nowIso(),
-    source: 'ingest',
   };
 
-  const { error } = await supabase.from('artists').upsert(payload, { onConflict: 'artist_key' });
+  const { data, error } = await supabase
+    .from('artists')
+    .upsert(payload, { onConflict: 'artist_key' })
+    .select('id, artist_key')
+    .maybeSingle();
+
   if (error) throw new Error(`[artist_upsert] ${error.message}`);
+  if (!data?.id) throw new Error('[artist_upsert] upsert returned no id');
+
+  return { id: data.id as string, artistKey: data.artist_key as string };
 }
 
-export async function upsertAlbums(inputs: AlbumInput[]): Promise<{ map: IdMap; count: number }> {
-  if (!inputs.length) return { map: {}, count: 0 };
+export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Promise<{ map: IdMap; count: number }> {
+  if (!artistId || !inputs.length) return { map: {}, count: 0 };
+  const now = nowIso();
   const rows = inputs
-    .map((a) => ({
-      external_id: normalize(a.externalId),
-      title: normalize(a.title) || 'Album',
-      thumbnail_url: a.thumbnailUrl,
-      release_date: a.releaseDate,
-      album_type: a.albumType,
-      artist_key: a.artistKey,
-      track_count: a.trackCount ?? null,
-      updated_at: nowIso(),
-    }))
-    .filter((r) => Boolean(r.external_id));
+    .map((a) => {
+      const externalId = normalize(a.externalId);
+      if (!externalId) return null;
+      return {
+        external_id: externalId,
+        artist_id: artistId,
+        title: normalize(a.title) || externalId,
+        album_type: a.albumType ?? null,
+        release_date: a.releaseDate || null,
+        cover_url: a.coverUrl ?? null,
+        thumbnails: a.thumbnails ?? null,
+        source: normalize(a.source) || 'ingest',
+        updated_at: now,
+        created_at: now,
+      };
+    })
+    .filter(Boolean) as Array<Record<string, any>>;
 
   if (!rows.length) return { map: {}, count: 0 };
+
   const { error } = await supabase.from('albums').upsert(rows, { onConflict: 'external_id' });
   if (error) throw new Error(`[album_upsert] ${error.message}`);
 
@@ -125,8 +120,10 @@ export async function upsertAlbums(inputs: AlbumInput[]): Promise<{ map: IdMap; 
 
   const map: IdMap = {};
   (data || []).forEach((row: any) => {
-    if (row?.external_id && row?.id) map[row.external_id] = row.id;
+    const key = normalize(row?.external_id);
+    if (row?.id && key) map[key] = row.id;
   });
+
   return { map, count: rows.length };
 }
 
@@ -134,23 +131,24 @@ export async function upsertPlaylists(inputs: PlaylistInput[]): Promise<{ map: I
   if (!inputs.length) return { map: {}, count: 0 };
   const now = nowIso();
   const rows = inputs
-    .map((p) => ({
-      external_id: normalize(p.externalId),
-      title: normalize(p.title) || 'Playlist',
-      description: p.description,
-      cover_url: p.thumbnailUrl,
-      image_url: p.thumbnailUrl,
-      channel_id: normalize(p.channelId) || null,
-      item_count: p.itemCount ?? null,
-      is_public: true,
-      validated: true,
-      validated_on: now,
-      last_refreshed_on: now,
-      updated_at: now,
-    }))
-    .filter((r) => Boolean(r.external_id));
+    .map((p) => {
+      const externalId = normalize(p.externalId);
+      if (!externalId) return null;
+      return {
+        external_id: externalId,
+        title: normalize(p.title) || externalId,
+        description: normalize(p.description) || null,
+        cover_url: p.coverUrl ?? null,
+        playlist_type: p.playlistType || 'artist',
+        source: normalize(p.source) || 'ingest',
+        updated_at: now,
+        created_at: now,
+      };
+    })
+    .filter(Boolean) as Array<Record<string, any>>;
 
   if (!rows.length) return { map: {}, count: 0 };
+
   const { error } = await supabase.from('playlists').upsert(rows, { onConflict: 'external_id' });
   if (error) throw new Error(`[playlist_upsert] ${error.message}`);
 
@@ -162,62 +160,64 @@ export async function upsertPlaylists(inputs: PlaylistInput[]): Promise<{ map: I
 
   const map: IdMap = {};
   (data || []).forEach((row: any) => {
-    if (row?.external_id && row?.id) map[row.external_id] = row.id;
+    const key = normalize(row?.external_id);
+    if (row?.id && key) map[key] = row.id;
   });
+
   return { map, count: rows.length };
 }
 
-export async function upsertTracks(inputs: TrackInput[], albumMap: IdMap): Promise<{ idMap: IdMap; count: number }>
-{
-  if (!inputs.length) return { idMap: {}, count: 0 };
+export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; count: number }> {
+  if (!inputs.length) return { map: {}, count: 0 };
   const now = nowIso();
   const rows = inputs
     .map((t) => {
-      const youtubeId = normalize(t.youtubeId);
-      if (!youtubeId) return null;
-      const primaryArtist = normalize(t.artistNames[0]);
-      const albumId = t.albumExternalId ? albumMap[normalize(t.albumExternalId)] ?? null : null;
+      const externalId = normalize(t.externalId);
+      if (!externalId) return null;
       return {
-        youtube_id: youtubeId,
-        external_id: youtubeId,
-        title: normalize(t.title) || 'Untitled',
-        artist: primaryArtist || 'Unknown artist',
-        artist_key: primaryArtist || null,
-        duration: t.durationSeconds ?? null,
-        cover_url: t.thumbnailUrl,
-        image_url: t.thumbnailUrl,
-        album_id: albumId,
-        last_synced_at: now,
-        last_updated_at: now,
+        external_id: externalId,
+        title: normalize(t.title) || externalId,
+        duration_sec: t.durationSec ?? null,
+        published_at: t.publishedAt ?? null,
+        view_count: t.viewCount ?? null,
+        like_count: t.likeCount ?? null,
         is_video: Boolean(t.isVideo),
+        image_url: t.imageUrl ?? null,
         source: normalize(t.source) || 'ingest',
-        sync_status: 'fetched',
-        is_explicit: t.isExplicit ?? null,
+        updated_at: now,
+        created_at: now,
       };
     })
     .filter(Boolean) as Array<Record<string, any>>;
 
-  if (!rows.length) return { idMap: {}, count: 0 };
-  const { error } = await supabase.from('tracks').upsert(rows, { onConflict: 'youtube_id' });
+  if (!rows.length) return { map: {}, count: 0 };
+
+  const { error } = await supabase.from('tracks').upsert(rows, { onConflict: 'external_id' });
   if (error) throw new Error(`[track_upsert] ${error.message}`);
 
   const { data, error: selectError } = await supabase
     .from('tracks')
-    .select('id, youtube_id')
-    .in('youtube_id', rows.map((r) => r.youtube_id));
+    .select('id, external_id')
+    .in('external_id', rows.map((r) => r.external_id));
   if (selectError) throw new Error(`[track_upsert_select] ${selectError.message}`);
 
-  const idMap: IdMap = {};
+  const map: IdMap = {};
   (data || []).forEach((row: any) => {
-    if (row?.youtube_id && row?.id) idMap[row.youtube_id] = row.id;
+    const key = normalize(row?.external_id);
+    if (row?.id && key) map[key] = row.id;
   });
 
-  return { idMap, count: rows.length };
+  return { map, count: rows.length };
 }
 
 export async function linkAlbumTracks(albumId: string, trackIds: string[]): Promise<number> {
   if (!albumId || !trackIds.length) return 0;
-  const rows = trackIds.map((trackId, index) => ({ album_id: albumId, track_id: trackId, position: index + 1 }));
+  const rows = trackIds.map((trackId, index) => ({
+    album_id: albumId,
+    track_id: trackId,
+    position: index + 1,
+    created_at: nowIso(),
+  }));
   const { error } = await supabase.from('album_tracks').upsert(rows, { onConflict: 'album_id,track_id' });
   if (error) throw new Error(`[album_tracks] ${error.message}`);
   return rows.length;
@@ -225,33 +225,40 @@ export async function linkAlbumTracks(albumId: string, trackIds: string[]): Prom
 
 export async function linkPlaylistTracks(playlistId: string, trackIds: string[]): Promise<number> {
   if (!playlistId || !trackIds.length) return 0;
-  const rows = trackIds.map((trackId, index) => ({ playlist_id: playlistId, track_id: trackId, position: index + 1 }));
+  const rows = trackIds.map((trackId, index) => ({
+    playlist_id: playlistId,
+    track_id: trackId,
+    position: index + 1,
+    added_at: nowIso(),
+  }));
   const { error } = await supabase.from('playlist_tracks').upsert(rows, { onConflict: 'playlist_id,track_id' });
   if (error) throw new Error(`[playlist_tracks] ${error.message}`);
   return rows.length;
 }
 
-export async function linkArtistTracks(artistKey: string, trackIds: string[]): Promise<number> {
-  if (!artistKey || !trackIds.length) return 0;
-  const rows = trackIds.map((trackId) => ({ artist_key: artistKey, track_id: trackId }));
-  const { error } = await supabase.from('artist_tracks').upsert(rows, { onConflict: 'artist_key,track_id' });
+export async function linkArtistTracks(artistId: string, trackIds: string[]): Promise<number> {
+  if (!artistId || !trackIds.length) return 0;
+  const rows = trackIds.map((trackId, index) => ({
+    artist_id: artistId,
+    track_id: trackId,
+    role: 'primary',
+    position: index + 1,
+    created_at: nowIso(),
+  }));
+  const { error } = await supabase.from('artist_tracks').upsert(rows, { onConflict: 'artist_id,track_id' });
   if (error) throw new Error(`[artist_tracks] ${error.message}`);
   return rows.length;
 }
 
-export async function linkArtistPlaylists(artistKey: string, playlistIds: string[]): Promise<number> {
-  if (!artistKey || !playlistIds.length) return 0;
-  const rows = playlistIds.map((playlistId) => ({ artist_key: artistKey, playlist_id: playlistId }));
-  const { error } = await supabase.from('artist_playlists').upsert(rows, { onConflict: 'artist_key,playlist_id' });
+export async function linkArtistPlaylists(artistId: string, playlistIds: string[]): Promise<number> {
+  if (!artistId || !playlistIds.length) return 0;
+  const rows = playlistIds.map((playlistId) => ({
+    artist_id: artistId,
+    playlist_id: playlistId,
+    role: 'primary',
+    created_at: nowIso(),
+  }));
+  const { error } = await supabase.from('artist_playlists').upsert(rows, { onConflict: 'artist_id,playlist_id' });
   if (error) throw new Error(`[artist_playlists] ${error.message}`);
   return rows.length;
-}
-
-export function safeIdMapFromIds(rows: Array<{ id: string; external_id?: string; youtube_id?: string }>, keyField: 'external_id' | 'youtube_id') {
-  const map: IdMap = {};
-  rows.forEach((row) => {
-    const key = normalize(row[keyField]);
-    if (row.id && key) map[key] = row.id;
-  });
-  return map;
 }
