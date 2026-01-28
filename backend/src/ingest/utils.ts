@@ -17,7 +17,6 @@ export type AlbumInput = {
   externalId: string;
   title: string;
   albumType?: 'album' | 'single' | 'ep' | null;
-  releaseDate?: string | null;
   coverUrl?: string | null;
   thumbnails?: any;
   source?: string | null;
@@ -45,6 +44,8 @@ export type PlaylistInput = {
 };
 
 export type IdMap = Record<string, string>;
+
+const DEFAULT_SOURCE = 'ingest';
 
 export function normalize(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -80,6 +81,26 @@ export function toSeconds(raw: string | number | null | undefined): number | nul
   return parts.reduce((acc, cur) => acc * 60 + cur, 0);
 }
 
+function coalesceUrl(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    const candidate = normalize(value);
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+function dedupePreserveOrder(ids: string[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  ids.forEach((id) => {
+    const normalized = normalize(id);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    ordered.push(normalized);
+  });
+  return ordered;
+}
+
 export async function upsertArtist(input: ArtistInput): Promise<{ id: string; artistKey: string }> {
   const artistKey = normalize(input.artistKey);
   if (!artistKey) throw new Error('[artist_upsert] artistKey is required');
@@ -94,7 +115,7 @@ export async function upsertArtist(input: ArtistInput): Promise<{ id: string; ar
     thumbnails: input.thumbnails ?? null,
     subscriber_count: input.subscriberCount ?? null,
     view_count: input.viewCount ?? null,
-    source: normalize(input.source) || 'ingest',
+    source: normalize(input.source) || DEFAULT_SOURCE,
     updated_at: nowIso(),
   };
 
@@ -121,11 +142,10 @@ export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Prom
         external_id: externalId,
         artist_id: artistId,
         title: normalize(a.title) || externalId,
-        album_type: a.albumType ?? null,
-        release_date: a.releaseDate || null,
-        cover_url: a.coverUrl ?? null,
+        album_type: a.albumType ?? 'album',
+        cover_url: coalesceUrl(a.coverUrl),
         thumbnails: a.thumbnails ?? null,
-        source: normalize(a.source) || 'ingest',
+        source: normalize(a.source) || DEFAULT_SOURCE,
         updated_at: now,
       };
     })
@@ -162,9 +182,9 @@ export async function upsertPlaylists(inputs: PlaylistInput[]): Promise<{ map: I
         external_id: externalId,
         title: normalize(p.title) || externalId,
         description: normalize(p.description) || null,
-        cover_url: p.coverUrl ?? null,
-        playlist_type: 'artist',
-        source: normalize(p.source) || 'ingest',
+        cover_url: coalesceUrl(p.coverUrl),
+        playlist_type: p.playlistType ?? 'artist',
+        source: normalize(p.source) || DEFAULT_SOURCE,
         updated_at: now,
       };
     })
@@ -206,7 +226,7 @@ export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; 
         like_count: t.likeCount ?? null,
         is_video: Boolean(t.isVideo),
         image_url: t.imageUrl ?? null,
-        source: normalize(t.source) || 'ingest',
+        source: normalize(t.source) || DEFAULT_SOURCE,
         updated_at: now,
       };
     })
@@ -267,7 +287,9 @@ export async function seedArtistsFromNames(names: string[]): Promise<number> {
 
 export async function linkAlbumTracks(albumId: string, trackIds: string[]): Promise<number> {
   if (!albumId || !trackIds.length) return 0;
-  const rows = trackIds.map((trackId, index) => ({
+  const orderedIds = dedupePreserveOrder(trackIds);
+  if (!orderedIds.length) return 0;
+  const rows = orderedIds.map((trackId, index) => ({
     album_id: albumId,
     track_id: trackId,
     position: index + 1,
@@ -280,7 +302,9 @@ export async function linkAlbumTracks(albumId: string, trackIds: string[]): Prom
 
 export async function linkPlaylistTracks(playlistId: string, trackIds: string[]): Promise<number> {
   if (!playlistId || !trackIds.length) return 0;
-  const rows = trackIds.map((trackId, index) => ({
+  const orderedIds = dedupePreserveOrder(trackIds);
+  if (!orderedIds.length) return 0;
+  const rows = orderedIds.map((trackId, index) => ({
     playlist_id: playlistId,
     track_id: trackId,
     position: index + 1,
@@ -293,7 +317,9 @@ export async function linkPlaylistTracks(playlistId: string, trackIds: string[])
 
 export async function linkArtistTracks(artistId: string, trackIds: string[]): Promise<number> {
   if (!artistId || !trackIds.length) return 0;
-  const rows = trackIds.map((trackId, index) => ({
+  const orderedIds = dedupePreserveOrder(trackIds);
+  if (!orderedIds.length) return 0;
+  const rows = orderedIds.map((trackId, index) => ({
     artist_id: artistId,
     track_id: trackId,
     role: 'primary',
@@ -307,7 +333,9 @@ export async function linkArtistTracks(artistId: string, trackIds: string[]): Pr
 
 export async function linkArtistPlaylists(artistId: string, playlistIds: string[]): Promise<number> {
   if (!artistId || !playlistIds.length) return 0;
-  const rows = playlistIds.map((playlistId) => ({
+  const orderedIds = dedupePreserveOrder(playlistIds);
+  if (!orderedIds.length) return 0;
+  const rows = orderedIds.map((playlistId) => ({
     artist_id: artistId,
     playlist_id: playlistId,
     role: 'primary',
@@ -317,3 +345,4 @@ export async function linkArtistPlaylists(artistId: string, playlistIds: string[
   if (error) throw new Error(`[artist_playlists] ${error.message}`);
   return rows.length;
 }
+
