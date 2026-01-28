@@ -28,11 +28,17 @@ import {
 export type Phase3Input = {
   artistId: string;
   artistKey: string;
+
   albums: AlbumInput[];
   playlists: PlaylistInput[];
   topSongs: TrackInput[];
+
   albumIdMap: IdMap;
   playlistIdMap: IdMap;
+
+  // ✅ kept for compatibility with ingestOneArtist.ts
+  albumExternalIds: string[];
+  playlistExternalIds: string[];
 };
 
 export type Phase3Output = {
@@ -49,10 +55,7 @@ function shouldSkipRadioMix(externalIdRaw: string): boolean {
 }
 
 /**
- * ✅ FIXED normalizePlaylistId
- * - If already starts with VL → keep
- * - If PL → add VL prefix
- * - If MPRE/OLAK → keep
+ * Normalize playlist/album browse IDs.
  */
 function normalizePlaylistId(externalIdRaw: string): { valid: boolean; id: string } {
   const externalId = normalize(externalIdRaw);
@@ -73,25 +76,21 @@ function pickBestThumbnail(thumbnails?: any): string | null {
   const arr = Array.isArray(thumbnails) ? thumbnails : thumbnails?.thumbnails;
   if (!Array.isArray(arr) || arr.length === 0) return null;
 
-  arr.sort((a: any, b: any) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0));
+  arr.sort(
+    (a: any, b: any) =>
+      (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0)
+  );
+
   return normalize(arr[0]?.url) || null;
 }
 
-/**
- * Robust videoId extractor
- */
 function getTrackVideoId(t: any): string {
-  const direct =
-    t?.videoId ??
-    t?.video_id ??
-    t?.id ??
-    t?.track?.videoId ??
-    t?.track?.id ??
-    "";
-
-  return normalize(direct);
+  return normalize(t?.videoId ?? "");
 }
 
+/**
+ * Build TrackInput objects (STRICTLY matching your TrackInput type).
+ */
 function buildTrackInputs(tracks: PlaylistBrowse["tracks"]): TrackInput[] {
   return (tracks || [])
     .map((t: any) => {
@@ -101,7 +100,6 @@ function buildTrackInputs(tracks: PlaylistBrowse["tracks"]): TrackInput[] {
       return {
         externalId,
         title: normalize(t?.title) || "Untitled",
-        artist: normalize(t?.artist) || null,
         durationSec: toSeconds(t?.duration ?? null),
         imageUrl: pickBestThumbnail(t?.thumbnail ?? null),
         isVideo: true,
@@ -148,10 +146,10 @@ async function ingestOne(
 
   if (!ordered.length) return;
 
-  // always link to artist
+  // always link tracks to artist
   await linkArtistTracks(artistId, ordered);
 
-  // ✅ FIX: lookup by externalId, NOT browseId
+  // ✅ FIX: map lookup must use externalId, not browseId
   const collectionId = collectionMap[normalize(input.externalId)];
 
   if (collectionId) {
@@ -174,7 +172,9 @@ export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Out
   );
 
   const playlistTasks = params.playlists.map((p) =>
-    limiter(() => ingestOne(params.artistId, p, params.playlistIdMap, "playlist"))
+    limiter(() =>
+      ingestOne(params.artistId, p, params.playlistIdMap, "playlist")
+    )
   );
 
   await Promise.all([...albumTasks, ...playlistTasks]);
@@ -185,7 +185,7 @@ export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Out
   });
 
   return {
-    trackCount: 0, // will be counted upstream
+    trackCount: 0,
     albumsProcessed: params.albums.length,
     playlistsProcessed: params.playlists.length,
   };
