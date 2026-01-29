@@ -1,11 +1,15 @@
 import { normalize, toSeconds } from '../ingest/utils';
 
+export type YTThumbnail = { url: string; width?: number; height?: number };
+
 export type YTMusicTrack = {
   videoId: string;
   title: string;
   artist: string;
+  artists: string[];
   duration: number | null;
   thumbnail: string | null;
+  thumbnails: YTThumbnail[];
 };
 
 export type ArtistBrowse = {
@@ -13,16 +17,17 @@ export type ArtistBrowse = {
   name: string;
   description: string | null;
   channelId: string;
-  thumbnails: string[];
+  thumbnails: YTThumbnail[];
   topSongs: YTMusicTrack[];
-  albums: Array<{ id: string; title: string; year: string | null; thumbnail: string | null; trackCount: number | null }>;
-  playlists: Array<{ id: string; title: string; thumbnail: string | null }>;
+  albums: Array<{ id: string; title: string; year: string | null; thumbnail: string | null; thumbnails: YTThumbnail[]; trackCount: number | null }>;
+  playlists: Array<{ id: string; title: string; thumbnail: string | null; thumbnails: YTThumbnail[] }>;
 };
 
 export type AlbumBrowse = {
   browseId: string;
   title: string;
   thumbnail: string | null;
+  thumbnails: YTThumbnail[];
   releaseDate: string | null;
   trackCount: number | null;
   tracks: YTMusicTrack[];
@@ -33,6 +38,7 @@ export type PlaylistBrowse = {
   title: string;
   subtitle: string | null;
   thumbnail: string | null;
+  thumbnails: YTThumbnail[];
   tracks: YTMusicTrack[];
 };
 
@@ -70,14 +76,32 @@ function pickText(node: any): string {
   return '';
 }
 
-function pickThumbnail(thumbnails: any): string | null {
-  const arr = Array.isArray(thumbnails) ? thumbnails : thumbnails?.thumbnails;
-  if (!Array.isArray(arr)) return null;
-  for (const t of arr) {
-    const url = normalize((t as any)?.url);
-    if (url) return url;
-  }
-  return null;
+function collectThumbnails(...sources: any[]): YTThumbnail[] {
+  const out: YTThumbnail[] = [];
+  const seen = new Set<string>();
+
+  sources.forEach((src) => {
+    const candidates = [
+      src?.thumbnail?.thumbnails,
+      src?.thumbnailRenderer?.thumbnail?.thumbnails,
+      src?.thumbnailRenderer?.musicThumbnailRenderer?.thumbnail?.thumbnails,
+      src?.musicThumbnailRenderer?.thumbnail?.thumbnails,
+      src?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails,
+      src?.thumbnails,
+    ];
+
+    candidates.forEach((arr) => {
+      if (!Array.isArray(arr)) return;
+      arr.forEach((t) => {
+        const url = normalize((t as any)?.url);
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        out.push({ url, width: (t as any)?.width, height: (t as any)?.height });
+      });
+    });
+  });
+
+  return out;
 }
 
 function pickDescription(root: any): string | null {
@@ -264,29 +288,64 @@ function extractArtistBrowseIdFromSearch(root: any): string | null {
   return fallbacks[0] || null;
 }
 
+function pickArtists(node: any, fallbackArtist: string): string[] {
+  const text =
+    normalize(pickText(node?.subtitle)) ||
+    normalize(node?.longBylineText?.runs?.[0]?.text) ||
+    normalize(node?.shortBylineText?.runs?.[0]?.text) ||
+    normalize(node?.playlistPanelVideoRenderer?.longBylineText?.runs?.[0]?.text) ||
+    fallbackArtist ||
+    'Unknown artist';
+
+  if (!text) return [];
+  return text
+    .split(/[,•&]/)
+    .map((s) => normalize(s))
+    .filter(Boolean);
+}
+
 function parseSongFromNode(node: any, fallbackArtist: string): YTMusicTrack | null {
   const watch = node?.navigationEndpoint?.watchEndpoint || node?.watchEndpoint || node?.playlistPanelVideoRenderer;
   const videoId = normalize(node?.videoId || watch?.videoId || node?.playlistPanelVideoRenderer?.videoId);
   if (!videoId) return null;
+
   const title =
     normalize(pickText(node?.title)) ||
     normalize(node?.playlistPanelVideoRenderer?.title?.runs?.[0]?.text) ||
     normalize(node?.headline?.runs?.[0]?.text) ||
     'Untitled';
-  const artist =
-    normalize(pickText(node?.subtitle)) ||
-    normalize(node?.longBylineText?.runs?.[0]?.text) ||
-    normalize(node?.shortBylineText?.runs?.[0]?.text) ||
-    fallbackArtist ||
-    'Unknown artist';
-  const durationRaw = pickText(node?.lengthText) || pickText(node?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text);
+
+  const artists = pickArtists(node, fallbackArtist);
+  const artist = artists[0] || fallbackArtist || 'Unknown artist';
+
+  const durationRaw =
+    pickText(node?.lengthText) ||
+    pickText(node?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text);
   const duration = toSeconds(durationRaw);
-  const thumbnail = pickThumbnail(node?.thumbnail) || pickThumbnail(node?.thumbnailRenderer) || pickThumbnail(node?.thumbnailOverlays);
-  return { videoId, title: title || 'Untitled', artist: artist || 'Unknown artist', duration, thumbnail: thumbnail || null };
+
+  const thumbnails = collectThumbnails(
+    node,
+    node?.thumbnail,
+    node?.thumbnailRenderer,
+    node?.thumbnailOverlays,
+    node?.musicThumbnailRenderer,
+  );
+  const thumbnail = thumbnails.at(-1)?.url ?? null;
+
+  return {
+    videoId,
+    title: title || 'Untitled',
+    artist: artist || 'Unknown artist',
+    artists,
+    duration,
+    thumbnail,
+    thumbnails,
+  };
 }
 
 function parseSongsFromBrowse(root: any, artistName: string): YTMusicTrack[] {
   const tracks: YTMusicTrack[] = [];
+
   walkAll(root, (node) => {
     if (node?.musicResponsiveListItemRenderer) {
       const parsed = parseSongFromNode(node.musicResponsiveListItemRenderer, artistName);
@@ -303,38 +362,47 @@ function parseSongsFromBrowse(root: any, artistName: string): YTMusicTrack[] {
   });
 
   const seen = new Set<string>();
-  return tracks.filter((t) => {
+  const deduped = tracks.filter((t) => {
     if (seen.has(t.videoId)) return false;
     seen.add(t.videoId);
     return true;
   });
+
+  if (deduped.length) {
+    console.log('[debug][parser] firstTrack.thumbnails', deduped[0]?.thumbnails || []);
+  }
+
+  return deduped;
 }
 
-function parseAlbumOrPlaylistFromTwoRow(node: any): { album?: { id: string; title: string; year: string | null; thumbnail: string | null }; playlist?: { id: string; title: string; thumbnail: string | null } } | null {
+function parseAlbumOrPlaylistFromTwoRow(node: any):
+  | { album?: { id: string; title: string; year: string | null; thumbnail: string | null; thumbnails: YTThumbnail[] }; playlist?: { id: string; title: string; thumbnail: string | null; thumbnails: YTThumbnail[] } }
+  | null {
   const nav = node?.navigationEndpoint?.browseEndpoint;
   const browseId = normalize(nav?.browseId);
   if (!browseId) return null;
   const title = pickText(node?.title) || browseId;
   const subtitle = pickText(node?.subtitle);
-  const thumb = pickThumbnail(node?.thumbnailRenderer) || pickThumbnail(node?.thumbnail);
+  const thumbnails = collectThumbnails(node?.thumbnailRenderer, node?.thumbnail);
+  const thumb = thumbnails.at(-1)?.url ?? null;
   const yearMatch = subtitle.match(/(20\d{2}|19\d{2})/);
   const year = yearMatch ? yearMatch[1] : null;
   const pageType = nav?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType;
 
   if (typeof pageType === 'string' && pageType.includes('ALBUM')) {
-    return { album: { id: browseId, title: normalize(title) || 'Album', year, thumbnail: thumb || null } };
+    return { album: { id: browseId, title: normalize(title) || 'Album', year, thumbnail: thumb, thumbnails } };
   }
 
   if (typeof pageType === 'string' && pageType.includes('PLAYLIST')) {
-    return { playlist: { id: browseId, title: normalize(title) || 'Playlist', thumbnail: thumb || null } };
+    return { playlist: { id: browseId, title: normalize(title) || 'Playlist', thumbnail: thumb, thumbnails } };
   }
 
   if (/^MPRE/i.test(browseId)) {
-    return { album: { id: browseId, title: normalize(title) || 'Album', year, thumbnail: thumb || null } };
+    return { album: { id: browseId, title: normalize(title) || 'Album', year, thumbnail: thumb, thumbnails } };
   }
 
   if (/^(VL|PL|OLAK)/i.test(browseId)) {
-    return { playlist: { id: browseId, title: normalize(title) || 'Playlist', thumbnail: thumb || null } };
+    return { playlist: { id: browseId, title: normalize(title) || 'Playlist', thumbnail: thumb, thumbnails } };
   }
 
   return null;
@@ -354,13 +422,17 @@ function parseAlbumsAndPlaylists(root: any): { albums: ArtistBrowse['albums']; p
       const nav = node.musicResponsiveListItemRenderer?.navigationEndpoint?.browseEndpoint;
       const browseId = normalize(nav?.browseId);
       const pageType = nav?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType;
-      const title = pickText(node.musicResponsiveListItemRenderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text);
-      const thumb = pickThumbnail(node.musicResponsiveListItemRenderer?.thumbnail) || null;
+      const title = pickText(
+        node.musicResponsiveListItemRenderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text,
+      );
+      const thumbnails = collectThumbnails(node.musicResponsiveListItemRenderer?.thumbnail);
+      const thumb = thumbnails.at(-1)?.url ?? null;
+
       if (browseId && typeof pageType === 'string' && pageType.includes('ALBUM')) {
-        albums.push({ id: browseId, title: normalize(title) || browseId, year: null, thumbnail: thumb, trackCount: null });
+        albums.push({ id: browseId, title: normalize(title) || browseId, year: null, thumbnail: thumb, thumbnails, trackCount: null });
       }
       if (browseId && typeof pageType === 'string' && pageType.includes('PLAYLIST')) {
-        playlists.push({ id: browseId, title: normalize(title) || browseId, thumbnail: thumb });
+        playlists.push({ id: browseId, title: normalize(title) || browseId, thumbnail: thumb, thumbnails });
       }
     }
   });
@@ -403,12 +475,14 @@ export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrow
   const header = json?.header?.musicImmersiveHeaderRenderer || json?.header?.musicHeaderRenderer;
   const name = normalize(pickText(header?.title)) || browseId;
   const channelId = normalize(header?.subscriptionButton?.subscribeButtonRenderer?.channelId) || browseId;
-  const thumbnails = [pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail), pickThumbnail(header?.thumbnail)]
-    .filter(Boolean)
-    .map((t) => t as string);
+  const thumbnails = collectThumbnails(header?.thumbnail?.musicThumbnailRenderer, header?.thumbnail);
   const topSongs = parseSongsFromBrowse(json, name).slice(0, 10);
   const { albums, playlists } = parseAlbumsAndPlaylists(json);
   const description = pickDescription(json);
+
+  if (topSongs.length) {
+    console.log('[debug][parser] firstTrack.thumbnails', topSongs[0]?.thumbnails || []);
+  }
 
   return {
     browseId,
@@ -435,13 +509,19 @@ export async function fetchAlbumBrowse(browseIdRaw: string): Promise<AlbumBrowse
   const subtitle = pickText(header?.subtitle);
   const yearMatch = subtitle.match(/(20\d{2}|19\d{2})/);
   const releaseDate = yearMatch ? `${yearMatch[1]}-01-01` : null;
-  const thumbnail = pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail) || pickThumbnail(header?.thumbnail) || null;
+  const thumbnails = collectThumbnails(header?.thumbnail?.musicThumbnailRenderer, header?.thumbnail);
+  const thumbnail = thumbnails.at(-1)?.url ?? null;
   const tracks = parseSongsFromBrowse(json, pickText(header?.subtitle)).map((t) => ({ ...t, artist: t.artist || pickText(header?.subtitle) }));
+
+  if (tracks.length) {
+    console.log('[debug][parser] firstTrack.thumbnails', tracks[0]?.thumbnails || []);
+  }
 
   return {
     browseId,
     title,
     thumbnail,
+    thumbnails,
     releaseDate,
     trackCount: tracks.length || null,
     tracks,
@@ -459,14 +539,20 @@ export async function fetchPlaylistBrowse(browseIdRaw: string): Promise<Playlist
   const header = json?.header?.musicDetailHeaderRenderer || json?.header?.musicTwoRowHeaderRenderer;
   const title = normalize(pickText(header?.title)) || browseId;
   const subtitle = normalize(pickText(header?.subtitle)) || null;
-  const thumbnail = pickThumbnail(header?.thumbnail?.musicThumbnailRenderer?.thumbnail) || pickThumbnail(header?.thumbnail) || null;
+  const thumbnails = collectThumbnails(header?.thumbnail?.musicThumbnailRenderer, header?.thumbnail);
+  const thumbnail = thumbnails.at(-1)?.url ?? null;
   const tracks = parseSongsFromBrowse(json, subtitle || title);
+
+  if (tracks.length) {
+    console.log('[debug][parser] firstTrack.thumbnails', tracks[0]?.thumbnails || []);
+  }
 
   return {
     browseId,
     title,
     subtitle,
     thumbnail,
+    thumbnails,
     tracks,
   };
 }

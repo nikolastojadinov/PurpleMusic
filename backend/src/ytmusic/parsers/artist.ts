@@ -4,13 +4,24 @@ import { normalize } from '../../ingest/utils';
 export function mapArtistTracks(tracks: YTMusicTrack[]): YTMusicTrack[] {
   return Array.isArray(tracks)
     ? tracks
-        .map((t) => ({
-          videoId: normalize(t.videoId),
-          title: normalize(t.title) || 'Untitled',
-          artist: normalize(t.artist) || 'Unknown artist',
-          duration: t.duration ?? null,
-          thumbnail: t.thumbnail ?? null,
-        }))
+        .map((t) => {
+          const thumbnails = Array.isArray(t.thumbnails) ? t.thumbnails : [];
+          const thumbnail = t.thumbnail ?? thumbnails.at(-1)?.url ?? null;
+          const artists = Array.isArray(t.artists)
+            ? t.artists.map((a) => normalize(a)).filter(Boolean)
+            : [];
+          const artist = normalize(t.artist) || artists[0] || 'Unknown artist';
+
+          return {
+            videoId: normalize(t.videoId),
+            title: normalize(t.title) || 'Untitled',
+            artist,
+            artists: artists.length ? artists : [artist],
+            duration: t.duration ?? null,
+            thumbnail,
+            thumbnails,
+          } satisfies YTMusicTrack;
+        })
         .filter((t) => t.videoId)
     : [];
 }
