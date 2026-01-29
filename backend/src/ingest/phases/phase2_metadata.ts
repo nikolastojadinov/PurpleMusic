@@ -32,60 +32,15 @@ type RawAlbum = ArtistBrowse['albums'][number];
 type RawPlaylist = ArtistBrowse['playlists'][number];
 type RawTopSong = ArtistBrowse['topSongs'][number];
 
-function pickBestThumbnail(input: any): string | null {
-  const candidates: any[] = [];
-
-  if (typeof input === 'string') {
-    const url = normalize(input);
-    if (url) candidates.push({ url, width: 0, height: 0 });
-  }
-
-  if (Array.isArray(input)) candidates.push(...input);
-
-  const paths = [
-    input?.thumbnails,
-    input?.thumbnail?.thumbnails,
-    input?.musicThumbnailRenderer?.thumbnail?.thumbnails,
-    input?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails,
-  ];
-
-  paths.forEach((p) => {
-    if (Array.isArray(p)) candidates.push(...p);
-  });
-
-  if (!candidates.length) return null;
-
-  const scored = candidates
-    .map((t: any) => {
-      const url = normalize(t?.url ?? t);
-      if (!url) return null;
-      const w = Number(t?.width) || 0;
-      const h = Number(t?.height) || 0;
-      const score = w && h ? w * h : w || h || 1;
-      return { url, score };
-    })
-    .filter(Boolean) as Array<{ url: string; score: number }>;
-
-  if (!scored.length) return null;
-  scored.sort((a, b) => b.score - a.score);
-  return scored[0].url;
-}
-
-function pickCover(raw: any): { coverUrl: string | null; thumbnails: any } {
-  const thumbnails =
-    (raw as any)?.thumbnail?.thumbnails ||
-    (raw as any)?.thumbnails ||
-    (raw as any)?.musicThumbnailRenderer?.thumbnail?.thumbnails ||
-    (raw as any)?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails ||
-    (Array.isArray(raw) ? raw : null);
-
-  const coverUrl =
-    normalize((raw as any)?.imageUrl) ||
-    normalize((raw as any)?.thumbnail) ||
-    pickBestThumbnail(raw) ||
-    null;
-
-  return { coverUrl, thumbnails };
+function extractBestImageUrl(obj: any): string | null {
+  return (
+    obj?.thumbnailUrl ??
+    obj?.thumbnail?.thumbnails?.at(-1)?.url ??
+    obj?.thumbnails?.at(-1)?.url ??
+    obj?.musicThumbnailRenderer?.thumbnail?.thumbnails?.at(-1)?.url ??
+    obj?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails?.at(-1)?.url ??
+    null
+  );
 }
 
 function dedupeByExternalId<T extends { externalId: string }>(items: T[]): T[] {
@@ -103,13 +58,12 @@ function dedupeByExternalId<T extends { externalId: string }>(items: T[]): T[] {
 function mapAlbums(raw: RawAlbum[]): AlbumInput[] {
   return dedupeByExternalId(
     (raw || []).map((album) => {
-      const { coverUrl, thumbnails } = pickCover(album);
       return {
         externalId: (album as any)?.id,
         title: (album as any)?.title,
         albumType: null,
-        coverUrl,
-        thumbnails,
+        coverUrl: extractBestImageUrl(album),
+        thumbnails: (album as any)?.thumbnails ?? (album as any)?.thumbnail?.thumbnails ?? null,
         source: 'artist_browse',
       } satisfies AlbumInput;
     }),
@@ -119,12 +73,11 @@ function mapAlbums(raw: RawAlbum[]): AlbumInput[] {
 function mapPlaylists(raw: RawPlaylist[]): PlaylistInput[] {
   return dedupeByExternalId(
     (raw || []).map((playlist) => {
-      const { coverUrl, thumbnails } = pickCover(playlist);
       return {
         externalId: (playlist as any)?.id,
         title: (playlist as any)?.title,
-        coverUrl,
-        thumbnails,
+        coverUrl: extractBestImageUrl(playlist),
+        thumbnails: (playlist as any)?.thumbnails ?? (playlist as any)?.thumbnail?.thumbnails ?? null,
         playlistType: 'artist',
         source: 'artist_browse',
       } satisfies PlaylistInput;
@@ -135,12 +88,11 @@ function mapPlaylists(raw: RawPlaylist[]): PlaylistInput[] {
 function mapTopSongs(raw: RawTopSong[]): TrackInput[] {
   return dedupeByExternalId(
     (raw || []).map((song) => {
-      const { coverUrl } = pickCover(song);
       return {
         externalId: (song as any)?.id,
         title: (song as any)?.title,
         durationSec: toSeconds((song as any)?.duration || null),
-        imageUrl: coverUrl,
+        imageUrl: extractBestImageUrl(song),
         isVideo: true,
         source: 'artist_top_song',
       } satisfies TrackInput;
@@ -173,6 +125,9 @@ export async function runPhase2Metadata(params: {
   const playlistsWithCover = playlists.filter((p) => Boolean(normalize(p.coverUrl))).length;
 
   await ensureArtistDisplayName(params.artistId, params.artistBrowse.name || params.artistKey);
+
+  console.log('[debug][upsertAlbums] cover_url sample:', albums[0]?.coverUrl ?? null);
+  console.log('[debug][upsertPlaylists] cover_url sample:', playlists[0]?.coverUrl ?? null);
 
   const [{ map: albumIdMap }, { map: playlistIdMap }] = await Promise.all([
     upsertAlbums(albums, params.artistId),

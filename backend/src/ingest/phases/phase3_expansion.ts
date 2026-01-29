@@ -72,63 +72,35 @@ function normalizePlaylistId(externalIdRaw: string): { valid: boolean; id: strin
   return { valid: false, id: "" };
 }
 
-function pickBestThumbnail(input: any): string | null {
-  const candidates: any[] = [];
-
-  if (typeof input === "string") {
-    const url = normalize(input);
-    if (url) candidates.push({ url, width: 0, height: 0 });
-  }
-
-  if (Array.isArray(input)) candidates.push(...input);
-
-  const paths = [
-    input?.thumbnails,
-    input?.thumbnail?.thumbnails,
-    input?.musicThumbnailRenderer?.thumbnail?.thumbnails,
-    input?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails,
-  ];
-
-  paths.forEach((p) => {
-    if (Array.isArray(p)) candidates.push(...p);
-  });
-
-  if (!candidates.length) return null;
-
-  const scored = candidates
-    .map((t: any) => {
-      const url = normalize(t?.url ?? t);
-      if (!url) return null;
-      const w = Number(t?.width) || 0;
-      const h = Number(t?.height) || 0;
-      const score = w && h ? w * h : w || h || 1;
-      return { url, score };
-    })
-    .filter(Boolean) as Array<{ url: string; score: number }>;
-
-  if (!scored.length) return null;
-  scored.sort((a, b) => b.score - a.score);
-  return scored[0].url;
+function extractBestImageUrl(obj: any): string | null {
+  return (
+    obj?.thumbnailUrl ??
+    obj?.thumbnail?.thumbnails?.at(-1)?.url ??
+    obj?.thumbnails?.at(-1)?.url ??
+    obj?.musicThumbnailRenderer?.thumbnail?.thumbnails?.at(-1)?.url ??
+    obj?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails?.at(-1)?.url ??
+    null
+  );
 }
 
 function getTrackVideoId(t: any): string {
   return normalize(t?.videoId ?? "");
 }
 
-/**
- * Build TrackInput objects (STRICTLY matching your TrackInput type).
- */
 function buildTrackInputs(tracks: PlaylistBrowse["tracks"]): TrackInput[] {
   return (tracks || [])
     .map((t: any) => {
       const externalId = getTrackVideoId(t);
       if (!externalId) return null;
 
+      const rawImageUrl = extractBestImageUrl(t) ?? extractBestImageUrl(t?.album);
+      const imageUrl = normalize(rawImageUrl) || null;
+
       return {
         externalId,
         title: normalize(t?.title) || "Untitled",
         durationSec: toSeconds(t?.duration ?? null),
-        imageUrl: pickBestThumbnail(t),
+        imageUrl,
         isVideo: true,
         source: "ingest",
       } satisfies TrackInput;
@@ -168,15 +140,15 @@ async function ingestOne(
   const trackInputs = buildTrackInputs(browse.tracks);
   if (!trackInputs.length) return;
 
+  console.log("[debug][upsertTracks] image_url sample:", trackInputs[0]?.imageUrl ?? null);
+
   const { map } = await upsertTracks(trackInputs);
   const ordered = orderedTrackIds(browse.tracks, map);
 
   if (!ordered.length) return;
 
-  // always link tracks to artist
   await linkArtistTracks(artistId, ordered);
 
-  // ✅ FIX: map lookup must use externalId, not browseId
   const collectionId = collectionMap[normalize(input.externalId)];
 
   if (collectionId) {
