@@ -5,13 +5,13 @@ import supabase from '../../lib/supabase';
 import {
   normalize,
   toSeconds,
-  upsertAlbums,
-  upsertPlaylists,
   type AlbumInput,
   type PlaylistInput,
   type TrackInput,
   type IdMap,
 } from '../utils';
+import { upsertAlbums } from '../utils/upsertAlbums';
+import { upsertPlaylists } from '../utils/upsertPlaylists';
 import { linkArtistPlaylists } from '../utils/linkArtistPlaylists';
 import type { ArtistBrowse } from '../../ytmusic/innertubeClient';
 

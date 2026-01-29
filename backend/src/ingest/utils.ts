@@ -46,8 +46,6 @@ export type PlaylistInput = {
 
 export type IdMap = Record<string, string>;
 
-const DEFAULT_SOURCE = 'ingest';
-
 export function normalize(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -80,37 +78,7 @@ export function toSeconds(raw: string | number | null | undefined): number | nul
   return parts.reduce((acc, cur) => acc * 60 + cur, 0);
 }
 
-function coalesceUrl(...values: Array<string | null | undefined>): string | null {
-  for (const value of values) {
-    const candidate = normalize(value);
-    if (candidate) return candidate;
-  }
-  return null;
-}
-
-function pickBestThumbnail(thumbnails: any): string | null {
-  const arr = Array.isArray(thumbnails) ? thumbnails : thumbnails?.thumbnails;
-  if (!Array.isArray(arr) || !arr.length) return null;
-  const scored = arr
-    .map((t: any) => {
-      const url = normalize(t?.url);
-      if (!url) return null;
-      const w = Number(t?.width) || 0;
-      const h = Number(t?.height) || 0;
-      const score = w && h ? w * h : w || h || 1;
-      return { url, score };
-    })
-    .filter(Boolean) as Array<{ url: string; score: number }>;
-  if (!scored.length) return null;
-  scored.sort((a, b) => b.score - a.score);
-  return scored[0].url;
-}
-
-function bestCoverFromInput(coverUrl?: string | null, thumbnails?: any): string | null {
-  return coalesceUrl(coverUrl, pickBestThumbnail(thumbnails));
-}
-
-function dedupePreserveOrder(ids: string[]): string[] {
+export function dedupePreserveOrder(ids: string[]): string[] {
   const seen = new Set<string>();
   const ordered: string[] = [];
   ids.forEach((id) => {
@@ -120,169 +88,6 @@ function dedupePreserveOrder(ids: string[]): string[] {
     ordered.push(normalized);
   });
   return ordered;
-}
-
-function mapExternalId(row: { external_id: string; id?: string | null }): { key: string; id: string | null } {
-  const key = normalize(row?.external_id);
-  const id = row?.id ? String(row.id) : null;
-  return { key, id };
-}
-
-async function fillMissingCovers(
-  table: 'albums' | 'playlists',
-  rows: Array<{ external_id: string; cover_url: string | null; thumbnails?: any }>,
-): Promise<void> {
-  const candidates = rows.filter((r) => Boolean(r.cover_url));
-  if (!candidates.length) return;
-
-  for (const row of candidates) {
-    const payload: Record<string, any> = { cover_url: row.cover_url, updated_at: nowIso() };
-    if (table === 'albums') payload.thumbnails = row.thumbnails ?? null;
-
-    const { error } = await supabase
-      .from(table)
-      .update(payload)
-      .eq('external_id', row.external_id)
-      .is('cover_url', null);
-
-    if (error) throw new Error(`[${table}_cover_fill] ${error.message}`);
-  }
-}
-
-export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Promise<{ map: IdMap; count: number }> {
-  if (!artistId || !inputs.length) return { map: {}, count: 0 };
-  const now = nowIso();
-  const rows = inputs
-    .map((a) => {
-      const externalId = normalize(a.externalId);
-      if (!externalId) return null;
-      const rawType = a.albumType;
-      const safeAlbumType = rawType === 'single' ? 'single' : rawType === 'ep' ? 'ep' : 'album';
-      if (rawType !== safeAlbumType) {
-        console.info('[phase2][album_type_defaulted]', {
-          external_id: externalId,
-          raw_type: rawType ?? null,
-          applied: safeAlbumType,
-        });
-      }
-      const coverUrl = bestCoverFromInput(a.coverUrl, a.thumbnails);
-      return {
-        external_id: externalId,
-        artist_id: artistId,
-        title: normalize(a.title) || externalId,
-        album_type: safeAlbumType,
-        cover_url: coverUrl,
-        thumbnails: a.thumbnails ?? null,
-        source: normalize(a.source) || DEFAULT_SOURCE,
-        updated_at: now,
-      };
-    })
-    .filter(Boolean) as Array<Record<string, any>>;
-
-  if (!rows.length) return { map: {}, count: 0 };
-
-  const { error } = await supabase.from('albums').upsert(rows, { onConflict: 'external_id' });
-  if (error) throw new Error(`[album_upsert] ${error.message}`);
-
-  await fillMissingCovers('albums', rows.map((r) => ({ external_id: r.external_id, cover_url: r.cover_url ?? null, thumbnails: r.thumbnails })));
-
-  const { data, error: selectError } = await supabase
-    .from('albums')
-    .select('id, external_id')
-    .in('external_id', rows.map((r) => r.external_id));
-  if (selectError) throw new Error(`[album_upsert_select] ${selectError.message}`);
-
-  const map: IdMap = {};
-  (data || []).forEach((row: any) => {
-    const { key, id } = mapExternalId(row);
-    if (id && key) map[key] = id;
-  });
-
-  return { map, count: rows.length };
-}
-
-export async function upsertPlaylists(inputs: PlaylistInput[]): Promise<{ map: IdMap; count: number }> {
-  if (!inputs.length) return { map: {}, count: 0 };
-  const now = nowIso();
-  const rows = inputs
-    .map((p) => {
-      const externalId = normalize(p.externalId);
-      if (!externalId) return null;
-      const coverUrl = bestCoverFromInput(p.coverUrl, p.thumbnails);
-      return {
-        external_id: externalId,
-        title: normalize(p.title) || externalId,
-        description: normalize(p.description) || null,
-        cover_url: coverUrl,
-        playlist_type: p.playlistType ?? 'artist',
-        source: normalize(p.source) || DEFAULT_SOURCE,
-        updated_at: now,
-      };
-    })
-    .filter(Boolean) as Array<Record<string, any>>;
-
-  if (!rows.length) return { map: {}, count: 0 };
-
-  const { error } = await supabase.from('playlists').upsert(rows, { onConflict: 'external_id' });
-  if (error) throw new Error(`[playlist_upsert] ${error.message}`);
-
-  await fillMissingCovers('playlists', rows.map((r) => ({ external_id: r.external_id, cover_url: r.cover_url ?? null })));
-
-  const { data, error: selectError } = await supabase
-    .from('playlists')
-    .select('id, external_id')
-    .in('external_id', rows.map((r) => r.external_id));
-  if (selectError) throw new Error(`[playlist_upsert_select] ${selectError.message}`);
-
-  const map: IdMap = {};
-  (data || []).forEach((row: any) => {
-    const { key, id } = mapExternalId(row);
-    if (id && key) map[key] = id;
-  });
-
-  return { map, count: rows.length };
-}
-
-export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; idMap: IdMap; count: number }> {
-  if (!inputs.length) return { map: {}, idMap: {}, count: 0 };
-  const now = nowIso();
-  const rows = inputs
-    .map((t) => {
-      const externalId = normalize(t.externalId);
-      if (!externalId) return null;
-      return {
-        external_id: externalId,
-        title: normalize(t.title) || externalId,
-        duration_sec: t.durationSec ?? null,
-        published_at: t.publishedAt ?? null,
-        view_count: t.viewCount ?? null,
-        like_count: t.likeCount ?? null,
-        is_video: Boolean(t.isVideo),
-        image_url: t.imageUrl ?? null,
-        source: normalize(t.source) || DEFAULT_SOURCE,
-        updated_at: now,
-      };
-    })
-    .filter(Boolean) as Array<Record<string, any>>;
-
-  if (!rows.length) return { map: {}, idMap: {}, count: 0 };
-
-  const { error } = await supabase.from('tracks').upsert(rows, { onConflict: 'external_id' });
-  if (error) throw new Error(`[track_upsert] ${error.message}`);
-
-  const { data, error: selectError } = await supabase
-    .from('tracks')
-    .select('id, external_id')
-    .in('external_id', rows.map((r) => r.external_id));
-  if (selectError) throw new Error(`[track_upsert_select] ${selectError.message}`);
-
-  const map: IdMap = {};
-  (data || []).forEach((row: any) => {
-    const { key, id } = mapExternalId(row);
-    if (id && key) map[key] = id;
-  });
-
-  return { map, idMap: map, count: rows.length };
 }
 
 export async function seedArtistsFromNames(names: string[]): Promise<number> {
@@ -363,3 +168,4 @@ export async function linkArtistTracks(artistId: string, trackIds: string[]): Pr
   if (error) throw new Error(`[artist_tracks] ${error.message}`);
   return rows.length;
 }
+

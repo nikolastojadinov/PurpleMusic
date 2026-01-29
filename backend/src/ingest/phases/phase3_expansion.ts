@@ -18,12 +18,12 @@ import {
   linkPlaylistTracks,
   normalize,
   toSeconds,
-  upsertTracks,
   type AlbumInput,
   type PlaylistInput,
   type TrackInput,
   type IdMap,
 } from "../utils";
+import { upsertTracks } from "../utils/upsertTracks";
 
 export type Phase3Input = {
   artistId: string;
