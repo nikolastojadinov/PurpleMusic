@@ -79,7 +79,7 @@ export type PlaylistBrowse = {
   title: string;
   subtitle: string;
   thumbnailUrl: string | null;
-  tracks: Array<{ videoId: string; title: string; artist: string; duration?: string | null; thumbnail?: string | null }>;
+  tracks: Array<{ videoId: string; title: string; artist: string; duration?: string | null; thumbnail?: string | null; shortBylineText?: any }>;
 };
 
 type ParsedItem = {
@@ -982,7 +982,7 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
       pickThumbnail(renderer?.thumbnail?.thumbnails) ||
       null;
 
-    return { videoId, title, artist, duration: duration || null, thumbnail: thumb };
+    return { videoId, title, artist, duration: duration || null, thumbnail: thumb, shortBylineText: renderer?.shortBylineText };
   };
 
   function parseResponsive(renderer: any, source: string) {
@@ -1004,7 +1004,7 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     const thumb = pickThumbnail(panel?.thumbnail?.thumbnails);
     if (!trackTitle) return;
     stats.panelParsed += 1;
-    pushTrack({ videoId, title: trackTitle, artist, duration: duration || null, thumbnail: thumb }, source);
+    pushTrack({ videoId, title: trackTitle, artist, duration: duration || null, thumbnail: thumb, shortBylineText: panel?.shortBylineText }, source);
   }
 
   function parsePlaylistVideo(renderer: any, source: string) {
@@ -1021,7 +1021,7 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     const thumb = pickThumbnail(renderer?.thumbnail?.thumbnails);
     if (!trackTitle) return;
     stats.playlistVideoParsed += 1;
-    pushTrack({ videoId, title: trackTitle, artist, duration: duration || null, thumbnail: thumb }, source);
+    pushTrack({ videoId, title: trackTitle, artist, duration: duration || null, thumbnail: thumb, shortBylineText: renderer?.shortBylineText }, source);
   }
 
   function parsePlaylistItemData(item: any, source: string) {
