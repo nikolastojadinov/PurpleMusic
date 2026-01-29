@@ -99,43 +99,6 @@ function dedupePreserveOrder(ids: string[]): string[] {
   return ordered;
 }
 
-async function requireExistingArtistId(artistKeyRaw: string): Promise<{ id: string }> {
-  const artistKey = normalize(artistKeyRaw);
-  if (!artistKey) throw new Error('[artist_upsert] artistKey is required');
-  const { data, error } = await supabase
-    .from('artists')
-    .select('id')
-    .eq('artist_key', artistKey)
-    .maybeSingle();
-  if (error) throw new Error(`[artist_lookup] ${error.message}`);
-  if (!data?.id) throw new Error(`[artist_lookup] artist not found: ${artistKey}`);
-  return { id: data.id as string };
-}
-
-export async function upsertArtist(input: ArtistInput): Promise<{ id: string; artistKey: string }> {
-  const artistKey = normalize(input.artistKey);
-  const existing = await requireExistingArtistId(artistKey);
-
-  const payload = {
-    artist_key: artistKey,
-    name: normalize(input.name) || artistKey,
-    display_name: normalize(input.displayName) || normalize(input.name) || artistKey,
-    youtube_channel_id: normalize(input.youtubeChannelId) || null,
-    description: normalize(input.description) || null,
-    image_url: normalize(input.imageUrl) || null,
-    thumbnails: input.thumbnails ?? null,
-    subscriber_count: input.subscriberCount ?? null,
-    view_count: input.viewCount ?? null,
-    source: normalize(input.source) || DEFAULT_SOURCE,
-    updated_at: nowIso(),
-  };
-
-  const { error } = await supabase.from('artists').update(payload).eq('artist_key', artistKey);
-  if (error) throw new Error(`[artist_upsert] ${error.message}`);
-
-  return { id: existing.id, artistKey };
-}
-
 export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Promise<{ map: IdMap; count: number }> {
   if (!artistId || !inputs.length) return { map: {}, count: 0 };
   const now = nowIso();

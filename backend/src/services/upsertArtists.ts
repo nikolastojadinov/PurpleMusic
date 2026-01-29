@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from './supabaseClient';
 
 export type ArtistInput = {
   name: string;
+  displayName?: string | null;
   channelId?: string | null;
   thumbnails?: { avatar?: string | null; banner?: string | null };
   source?: string | null;
@@ -81,7 +82,7 @@ async function loadExistingByNormalizedName(normalizedNames: string[]): Promise<
   const client = getSupabaseAdmin();
   const { data, error } = await client
     .from('artists')
-    .select('artist_key, normalized_name, youtube_channel_id')
+    .select('artist_key, normalized_name, youtube_channel_id, display_name')
     .in('normalized_name', normalizedNames);
 
   if (error) throw new Error(`[upsertArtists] normalized lookup ${error.message}`);
@@ -110,6 +111,26 @@ async function ensureChannelOnExisting(
   else existing.youtube_channel_id = channelId;
 }
 
+async function ensureDisplayNameOnExisting(
+  normalizedName: string,
+  desiredDisplayName: string | null,
+  existing: { display_name?: string | null } | undefined,
+): Promise<void> {
+  const displayName = normalize(desiredDisplayName);
+  const current = normalize(existing?.display_name);
+  if (!displayName || !existing || current) return;
+  const client = getSupabaseAdmin();
+  const { data, error } = await client
+    .from('artists')
+    .update({ display_name: displayName, updated_at: NOW() })
+    .eq('normalized_name', normalizedName)
+    .is('display_name', null)
+    .select('display_name')
+    .maybeSingle();
+  if (error) console.warn('[upsertArtists] display_name_update_skip', { normalized_name: normalizedName, message: error.message });
+  else if (data?.display_name) existing.display_name = data.display_name;
+}
+
 function buildArtistRow(
   input: ArtistInput,
   channelMap: Record<string, string>,
@@ -126,17 +147,21 @@ function buildArtistRow(
   created_at: string;
   updated_at: string;
 } {
-  const displayName = normalizeArtistDisplayName(input.name);
-  const baseKey = normalizeArtistKey(displayName || input.name || '');
+  const incomingName = normalize(input.name);
+  const incomingDisplayName = normalize(input.displayName) || incomingName;
+  const canonicalDisplayName = normalizeArtistDisplayName(incomingDisplayName || incomingName);
+  const baseKey = normalizeArtistKey(canonicalDisplayName || incomingName || '');
   const channelId = normalize(input.channelId) || null;
   const canonicalKey = channelId && channelMap[channelId] ? channelMap[channelId] : baseKey;
-  const normalizedName = normalizeNameForLookup(canonicalKey || displayName || baseKey);
+  const normalizedName = normalizeNameForLookup(canonicalKey || canonicalDisplayName || incomingDisplayName || baseKey);
+  const displayNameForStore = incomingDisplayName || canonicalDisplayName || canonicalKey;
+  const artistLabel = canonicalDisplayName || displayNameForStore || canonicalKey;
 
   return {
     artist_key: canonicalKey,
     normalized_name: normalizedName,
-    artist: displayName || canonicalKey,
-    display_name: displayName || canonicalKey,
+    artist: artistLabel || canonicalKey,
+    display_name: displayNameForStore || canonicalKey,
     youtube_channel_id: channelId,
     thumbnails: input.thumbnails || null,
     source: normalize(input.source) || normalize(sourceHint) || 'ingest',
@@ -174,6 +199,7 @@ export async function upsertArtists(inputs: ArtistInput[], sourceHint?: string):
 
     if (existing) {
       await ensureChannelOnExisting(normalizedName, row.youtube_channel_id, existing);
+      await ensureDisplayNameOnExisting(normalizedName, row.display_name, existing);
       keys.push(normalizeKey(existing.artist_key));
       continue;
     }
@@ -193,12 +219,13 @@ export async function upsertArtists(inputs: ArtistInput[], sourceHint?: string):
 
         const { data: existingRow } = await client
           .from('artists')
-          .select('artist_key, normalized_name, youtube_channel_id')
+          .select('artist_key, normalized_name, youtube_channel_id, display_name')
           .eq('normalized_name', normalizedName)
           .maybeSingle();
 
         if (existingRow) {
           existingMap[normalizedName] = existingRow;
+          await ensureDisplayNameOnExisting(normalizedName, row.display_name, existingRow as any);
           await ensureChannelOnExisting(normalizedName, row.youtube_channel_id, existingRow as any);
           keys.push(normalizeKey((existingRow as any).artist_key));
           continue;
