@@ -81,53 +81,42 @@ function normalizeArtistKey(name: string): string {
   return underscored || "artist";
 }
 
-function splitArtistNames(text: string): string[] {
-  if (!text) return [];
-  return text
-    .split(/[,•]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+type ArtistRun = { name: string; browseId: string | null; artistKey: string };
 
-function extractPlaylistTrackArtistNames(rawItem: any): string[] {
-  const names: string[] = [];
+function extractPlaylistTrackArtistNames(rawItem: any): ArtistRun[] {
+  const runs = rawItem?.shortBylineText?.runs;
+  if (!runs || !Array.isArray(runs)) return [];
+
   const seen = new Set<string>();
+  const artists: ArtistRun[] = [];
 
-  const add = (value: string) => {
-    splitArtistNames(value).forEach((name) => {
-      const key = name.toLowerCase();
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      names.push(name);
-    });
-  };
+  runs.forEach((r: any) => {
+    const name = typeof r?.text === "string" ? r.text.trim() : "";
+    if (!name) return;
 
-  const flexRuns =
-    rawItem?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs;
-  const shortRuns = rawItem?.shortBylineText?.runs;
-  const longRuns = rawItem?.longBylineText?.runs;
+    const browseId = normalize(
+      r?.navigationEndpoint?.browseEndpoint?.browseId ?? ""
+    );
+    const artistKey = browseId || normalizeArtistKey(name);
+    if (!artistKey) return;
 
-  [flexRuns, shortRuns, longRuns].forEach((runs) => {
-    if (!runs || !Array.isArray(runs)) return;
-    runs.forEach((r: any) => {
-      const text = r?.text ?? r?.name ?? r?.content ?? "";
-      if (typeof text === "string" && text.trim()) add(text);
-    });
+    if (seen.has(artistKey)) return;
+    seen.add(artistKey);
+
+    artists.push({ name, browseId: browseId || null, artistKey });
   });
 
-  return names;
+  return artists;
 }
 
-async function upsertStubArtist(name: string): Promise<string | null> {
+async function upsertStubArtist(name: string, artistKey: string): Promise<string | null> {
   const cleaned = normalize(name);
-  if (!cleaned) return null;
+  const key = normalize(artistKey);
+  if (!cleaned || !key) return null;
 
-  const artistKey = normalizeArtistKey(cleaned);
   const row = {
-    artist_key: artistKey,
+    artist_key: key,
     name: cleaned,
-    display_name: null,
-    source: "playlist_track",
   };
 
   const { error } = await supabase
@@ -138,14 +127,14 @@ async function upsertStubArtist(name: string): Promise<string | null> {
   const { data, error: selectError } = await supabase
     .from("artists")
     .select("id")
-    .eq("artist_key", artistKey)
+    .eq("artist_key", key)
     .limit(1)
     .single();
   if (selectError) throw new Error(`[playlist_stub_artist_select] ${selectError.message}`);
 
   const artistId = data?.id ? String(data.id) : null;
   if (artistId) {
-    console.log("[debug][stubArtist] inserted", { artist_key: artistKey });
+    console.log("[debug][stubArtistUpsert] inserted", { artist_key: key });
   }
   return artistId;
 }
@@ -169,7 +158,7 @@ async function linkFeaturedArtistTrack(artistId: string, trackId: string): Promi
 
 type BuiltTrack = {
   input: TrackInput;
-  artistNames: string[];
+  artistRuns: ArtistRun[];
   videoId: string;
 };
 
@@ -191,13 +180,13 @@ function buildTrackInputs(
         extractBestImageUrl(parentPlaylist) ||
         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
-      const artistNames = extractPlaylistTrackArtistNames(t) || [];
+      const artistRuns = extractPlaylistTrackArtistNames(t);
 
       console.log("[debug][trackImageFix]", { videoId, resolved: imageUrl });
-      if (artistNames.length) {
-        console.log("[debug][playlistTrackArtists]", {
-          title: normalize(t?.title) || "Untitled",
-          artists: artistNames,
+      if (artistRuns.length) {
+        console.log("[debug][playlistArtists]", {
+          track: normalize(t?.title) || "Untitled",
+          extracted: artistRuns.map(({ name, browseId }) => ({ name, browseId })),
         });
       }
 
@@ -210,7 +199,7 @@ function buildTrackInputs(
         source: "ingest",
       };
 
-      return { input, artistNames, videoId } satisfies BuiltTrack;
+      return { input, artistRuns, videoId } satisfies BuiltTrack;
     })
     .filter(Boolean) as BuiltTrack[];
 }
@@ -260,9 +249,9 @@ async function ingestOne(
     await Promise.all(
       builtTracks.map(async (t) => {
         const trackId = map[t.input.externalId];
-        if (!trackId || !t.artistNames.length) return;
-        for (const artistName of t.artistNames) {
-          const artistId = await upsertStubArtist(artistName);
+        if (!trackId || !t.artistRuns.length) return;
+        for (const artist of t.artistRuns) {
+          const artistId = await upsertStubArtist(artist.name, artist.artistKey);
           if (!artistId) continue;
           await linkFeaturedArtistTrack(artistId, trackId);
         }
