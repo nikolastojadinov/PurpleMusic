@@ -74,6 +74,8 @@ function normalizePlaylistId(externalIdRaw: string): { valid: boolean; id: strin
 
 function extractBestImageUrl(obj: any): string | null {
   return (
+    obj?.coverUrl ??
+    obj?.imageUrl ??
     obj?.thumbnailUrl ??
     obj?.thumbnail?.thumbnails?.at(-1)?.url ??
     obj?.thumbnails?.at(-1)?.url ??
@@ -84,17 +86,34 @@ function extractBestImageUrl(obj: any): string | null {
 }
 
 function getTrackVideoId(t: any): string {
-  return normalize(t?.videoId ?? "");
+  return normalize(t?.videoId ?? (t as any)?.external_id ?? "");
 }
 
-function buildTrackInputs(tracks: PlaylistBrowse["tracks"]): TrackInput[] {
+function buildTrackInputs(
+  tracks: PlaylistBrowse["tracks"],
+  parentAlbum?: AlbumInput | null,
+  parentPlaylist?: PlaylistInput | null
+): TrackInput[] {
   return (tracks || [])
     .map((t: any) => {
       const externalId = getTrackVideoId(t);
       if (!externalId) return null;
 
-      const rawImageUrl = extractBestImageUrl(t) ?? extractBestImageUrl(t?.album);
-      const imageUrl = normalize(rawImageUrl) || null;
+      const videoId =
+        normalize(t?.videoId ?? "") ||
+        normalize((t as any)?.external_id ?? "") ||
+        externalId;
+
+      const imageUrl =
+        extractBestImageUrl(t) ||
+        extractBestImageUrl(parentAlbum) ||
+        extractBestImageUrl(parentPlaylist) ||
+        `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+      console.log("[debug][trackImageFix]", {
+        videoId,
+        resolved: imageUrl,
+      });
 
       return {
         externalId,
@@ -137,7 +156,10 @@ async function ingestOne(
     return;
   }
 
-  const trackInputs = buildTrackInputs(browse.tracks);
+  const parentAlbum = kind === "album" ? (input as AlbumInput) : null;
+  const parentPlaylist = kind === "playlist" ? (input as PlaylistInput) : null;
+
+  const trackInputs = buildTrackInputs(browse.tracks, parentAlbum, parentPlaylist);
   if (!trackInputs.length) return;
 
   console.log("[debug][upsertTracks] image_url sample:", trackInputs[0]?.imageUrl ?? null);
