@@ -72,16 +72,38 @@ function normalizePlaylistId(externalIdRaw: string): { valid: boolean; id: strin
   return { valid: false, id: "" };
 }
 
-function pickBestThumbnail(thumbnails?: any): string | null {
-  const arr = Array.isArray(thumbnails) ? thumbnails : thumbnails?.thumbnails;
-  if (!Array.isArray(arr) || arr.length === 0) return null;
+function pickBestThumbnail(input: any): string | null {
+  const candidates: any[] = [];
 
-  arr.sort(
-    (a: any, b: any) =>
-      (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0)
-  );
+  if (Array.isArray(input)) candidates.push(...input);
 
-  return normalize(arr[0]?.url) || null;
+  const paths = [
+    input?.thumbnails,
+    input?.thumbnail?.thumbnails,
+    input?.musicThumbnailRenderer?.thumbnail?.thumbnails,
+    input?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails,
+  ];
+
+  paths.forEach((p) => {
+    if (Array.isArray(p)) candidates.push(...p);
+  });
+
+  if (!candidates.length) return null;
+
+  const scored = candidates
+    .map((t: any) => {
+      const url = normalize(t?.url);
+      if (!url) return null;
+      const w = Number(t?.width) || 0;
+      const h = Number(t?.height) || 0;
+      const score = w && h ? w * h : w || h || 1;
+      return { url, score };
+    })
+    .filter(Boolean) as Array<{ url: string; score: number }>;
+
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0].url;
 }
 
 function getTrackVideoId(t: any): string {
@@ -101,7 +123,7 @@ function buildTrackInputs(tracks: PlaylistBrowse["tracks"]): TrackInput[] {
         externalId,
         title: normalize(t?.title) || "Untitled",
         durationSec: toSeconds(t?.duration ?? null),
-        imageUrl: pickBestThumbnail(t?.thumbnail ?? null),
+        imageUrl: pickBestThumbnail(t),
         isVideo: true,
         source: "ingest",
       } satisfies TrackInput;
