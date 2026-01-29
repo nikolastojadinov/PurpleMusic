@@ -1,6 +1,7 @@
 // target file: backend/src/ingest/phases/phase3_expansion.ts
 
 import pLimit from "p-limit";
+import supabase from "../../lib/supabase";
 
 /**
  * ✅ CRITICAL FIX:
@@ -18,6 +19,7 @@ import {
   linkPlaylistTracks,
   normalize,
   toSeconds,
+  nowIso,
   type AlbumInput,
   type PlaylistInput,
   type TrackInput,
@@ -48,6 +50,12 @@ export type Phase3Output = {
 };
 
 const CONCURRENCY = 3;
+
+type BuiltTrack = {
+  input: TrackInput;
+  artistNames: string[];
+  videoId: string;
+};
 
 function shouldSkipRadioMix(externalIdRaw: string): boolean {
   const upper = normalize(externalIdRaw).toUpperCase();
@@ -89,11 +97,102 @@ function getTrackVideoId(t: any): string {
   return normalize(t?.videoId ?? (t as any)?.external_id ?? "");
 }
 
+function normalizeArtistKey(name: string): string {
+  const base = normalize(name).toLowerCase();
+  const underscored = base.replace(/\s+/g, "_");
+  return underscored || "artist";
+}
+
+function extractTrackArtistNames(t: any): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (raw: unknown) => {
+    const value = typeof raw === "string" ? raw.trim() : "";
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(value);
+  };
+
+  const runCollections = [
+    (t as any)?.artists,
+    (t as any)?.artist,
+    (t as any)?.subtitle?.runs,
+    (t as any)?.shortBylineText?.runs,
+  ];
+
+  runCollections.forEach((runs: any) => {
+    if (!runs || !Array.isArray(runs)) return;
+    runs.forEach((r: any) => add(r?.name ?? r?.text ?? r?.content ?? r));
+  });
+
+  add((t as any)?.author);
+  add((t as any)?.byline);
+
+  return names;
+}
+
+async function upsertStubArtist(name: string): Promise<string | null> {
+  const cleaned = normalize(name);
+  if (!cleaned) return null;
+
+  const artistKey = normalizeArtistKey(cleaned);
+  const timestamp = nowIso();
+
+  const row = {
+    artist_key: artistKey,
+    name: cleaned,
+    source: "playlist_track",
+    updated_at: timestamp,
+  };
+
+  const { error } = await supabase
+    .from("artists")
+    .upsert(row, { onConflict: "artist_key", ignoreDuplicates: true });
+  if (error) throw new Error(`[playlist_stub_artist] ${error.message}`);
+
+  const { data, error: selectError } = await supabase
+    .from("artists")
+    .select("id")
+    .eq("artist_key", artistKey)
+    .limit(1)
+    .single();
+  if (selectError) throw new Error(`[playlist_stub_artist_select] ${selectError.message}`);
+
+  const artistId = data?.id ? String(data.id) : null;
+
+  if (artistId) {
+    console.log("[debug][stubArtist] inserted", { artist_key: artistKey, name: cleaned });
+  }
+
+  return artistId;
+}
+
+async function linkFeaturedArtistTrack(artistId: string, trackId: string): Promise<void> {
+  if (!artistId || !trackId) return;
+
+  const row = {
+    artist_id: artistId,
+    track_id: trackId,
+    role: "featured",
+    created_at: nowIso(),
+  };
+
+  const { error } = await supabase
+    .from("artist_tracks")
+    .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true });
+  if (error) throw new Error(`[playlist_featured_link] ${error.message}`);
+
+  console.log("[debug][featuredLink] linked", { track_id: trackId, artist_id: artistId });
+}
+
 function buildTrackInputs(
   tracks: PlaylistBrowse["tracks"],
   parentAlbum?: AlbumInput | null,
   parentPlaylist?: PlaylistInput | null
-): TrackInput[] {
+): BuiltTrack[] {
   return (tracks || [])
     .map((t: any) => {
       const externalId = getTrackVideoId(t);
@@ -110,21 +209,25 @@ function buildTrackInputs(
         extractBestImageUrl(parentPlaylist) ||
         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
+      const artistNames = extractTrackArtistNames(t);
+
       console.log("[debug][trackImageFix]", {
         videoId,
         resolved: imageUrl,
       });
 
-      return {
+      const input: TrackInput = {
         externalId,
         title: normalize(t?.title) || "Untitled",
         durationSec: toSeconds(t?.duration ?? null),
         imageUrl,
         isVideo: true,
         source: "ingest",
-      } satisfies TrackInput;
+      };
+
+      return { input, artistNames, videoId } satisfies BuiltTrack;
     })
-    .filter(Boolean) as TrackInput[];
+    .filter(Boolean) as BuiltTrack[];
 }
 
 function orderedTrackIds(tracks: PlaylistBrowse["tracks"], idMap: IdMap): string[] {
@@ -159,8 +262,10 @@ async function ingestOne(
   const parentAlbum = kind === "album" ? (input as AlbumInput) : null;
   const parentPlaylist = kind === "playlist" ? (input as PlaylistInput) : null;
 
-  const trackInputs = buildTrackInputs(browse.tracks, parentAlbum, parentPlaylist);
-  if (!trackInputs.length) return;
+  const builtTracks = buildTrackInputs(browse.tracks, parentAlbum, parentPlaylist);
+  if (!builtTracks.length) return;
+
+  const trackInputs = builtTracks.map((t) => t.input);
 
   console.log("[debug][upsertTracks] image_url sample:", trackInputs[0]?.imageUrl ?? null);
 
@@ -168,6 +273,21 @@ async function ingestOne(
   const ordered = orderedTrackIds(browse.tracks, map);
 
   if (!ordered.length) return;
+
+  if (kind === "playlist") {
+    await Promise.all(
+      builtTracks.map(async (t) => {
+        const trackId = map[t.input.externalId];
+        if (!trackId) return;
+
+        for (const artistName of t.artistNames) {
+          const artistId = await upsertStubArtist(artistName);
+          if (!artistId) continue;
+          await linkFeaturedArtistTrack(artistId, trackId);
+        }
+      })
+    );
+  }
 
   await linkArtistTracks(artistId, ordered);
 
