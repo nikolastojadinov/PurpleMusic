@@ -75,6 +75,11 @@ function normalizePlaylistId(externalIdRaw: string): { valid: boolean; id: strin
 function pickBestThumbnail(input: any): string | null {
   const candidates: any[] = [];
 
+  if (typeof input === "string") {
+    const url = normalize(input);
+    if (url) candidates.push({ url, width: 0, height: 0 });
+  }
+
   if (Array.isArray(input)) candidates.push(...input);
 
   const paths = [
@@ -92,7 +97,7 @@ function pickBestThumbnail(input: any): string | null {
 
   const scored = candidates
     .map((t: any) => {
-      const url = normalize(t?.url);
+      const url = normalize(t?.url ?? t);
       if (!url) return null;
       const w = Number(t?.width) || 0;
       const h = Number(t?.height) || 0;
