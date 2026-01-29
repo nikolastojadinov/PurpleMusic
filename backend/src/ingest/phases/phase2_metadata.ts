@@ -3,6 +3,7 @@
 // file: https://raw.githubusercontent.com/nikolastojadinov/hajde-music-stream/main/backend/src/services/youtubeMusicClient.ts
 // function(s): parseArtistBrowseFromInnertube, pickThumbnail
 import { normalize, toSeconds, upsertAlbums, upsertPlaylists, type AlbumInput, type PlaylistInput, type TrackInput, type IdMap } from '../utils';
+import { linkArtistPlaylists } from '../utils/linkArtistPlaylists';
 import type { ArtistBrowse } from '../../ytmusic/innertubeClient';
 
 export type Phase2Output = {
@@ -86,7 +87,7 @@ function mapPlaylists(raw: RawPlaylist[]): PlaylistInput[] {
         externalId: (playlist as any)?.id,
         title: (playlist as any)?.title,
         coverUrl,
-        // thumbnails are not persisted for playlists but retained for best URL picking
+        // thumbnails are retained for best URL picking
         playlistType: 'artist',
         source: 'artist_browse',
         thumbnails,
@@ -128,6 +129,14 @@ export async function runPhase2Metadata(params: {
     upsertAlbums(albums, params.artistId),
     upsertPlaylists(playlists),
   ]);
+
+  const playlistIds = Object.values(playlistIdMap || {}).filter((id) => Boolean(normalize(id)));
+  if (playlistIds.length) {
+    const linked = await linkArtistPlaylists(params.artistId, playlistIds);
+    console.info('[phase2] linked playlists to artist', { artistId: params.artistId, playlistCount: playlistIds.length, linked });
+  } else {
+    console.info('[phase2] linked playlists to artist', { artistId: params.artistId, playlistCount: 0, linked: 0 });
+  }
 
   const albumExternalIds = albums.map((a) => a.externalId);
   const playlistExternalIds = playlists.map((p) => p.externalId);

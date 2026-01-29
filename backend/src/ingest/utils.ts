@@ -363,18 +363,3 @@ export async function linkArtistTracks(artistId: string, trackIds: string[]): Pr
   if (error) throw new Error(`[artist_tracks] ${error.message}`);
   return rows.length;
 }
-
-export async function linkArtistPlaylists(artistId: string, playlistIds: string[]): Promise<number> {
-  if (!artistId || !playlistIds.length) return 0;
-  const orderedIds = dedupePreserveOrder(playlistIds);
-  if (!orderedIds.length) return 0;
-  const rows = orderedIds.map((playlistId) => ({
-    artist_id: artistId,
-    playlist_id: playlistId,
-    role: 'primary',
-    created_at: nowIso(),
-  }));
-  const { error } = await supabase.from('artist_playlists').upsert(rows, { onConflict: 'artist_id,playlist_id' });
-  if (error) throw new Error(`[artist_playlists] ${error.message}`);
-  return rows.length;
-}
