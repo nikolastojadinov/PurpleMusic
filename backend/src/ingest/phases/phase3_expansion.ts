@@ -269,7 +269,12 @@ async function ingestOne(
   if (!normalized.valid) return;
 
   const browse = await browsePlaylistById(normalized.id);
+console.log(
+  "[DUMP_TRACK_0]",
+  JSON.stringify(browse.tracks?.[0], null, 2)
+);
 
+process.exit(0);
   if (!browse?.tracks?.length) {
     console.info(`[phase3][${kind}] EMPTY`, { externalId: input.externalId, browseId: normalized.id });
     return;
