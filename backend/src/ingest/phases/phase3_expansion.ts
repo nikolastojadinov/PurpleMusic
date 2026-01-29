@@ -117,10 +117,10 @@ function extractPlaylistTrackArtists(rawItem: any): ArtistRun[] {
   return artists;
 }
 
-async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string | null; action: string }> {
+async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string | null; artistKey: string; action: string }> {
   const name = normalize(run.name);
   const artistKey = normalize(run.artistKey);
-  if (!name || !artistKey) return { artistId: null, action: "skip" };
+  if (!name || !artistKey) return { artistId: null, artistKey, action: "skip" };
 
   const now = nowIso();
 
@@ -152,7 +152,7 @@ async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string 
 
     const artistId = inserted?.id ? String(inserted.id) : null;
     console.log("[phase3][artist-upsert]", { artist_key: artistKey, action: "insert", artist_id: artistId });
-    return { artistId, action: "insert" };
+    return { artistId, artistKey, action: "insert" };
   }
 
   const updates: Record<string, any> = { updated_at: now };
@@ -179,23 +179,29 @@ async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string 
 
   const artistId = updated?.id ? String(updated.id) : null;
   console.log("[phase3][artist-upsert]", { artist_key: artistKey, action: "update", artist_id: artistId });
-  return { artistId, action: "update" };
+  return { artistId, artistKey, action: "update" };
 }
 
-async function linkArtistTrack(artistId: string, trackId: string, role: "primary" | "featured", artistKey: string) {
-  if (!artistId || !trackId) return;
+async function linkArtistTrack(
+  artistId: string | null,
+  trackId: string,
+  role: "primary" | "featured",
+  artistKey: string
+) {
+  if (!artistKey || !trackId) return;
 
   const row = {
-    artist_id: artistId,
+    artist_key: artistKey,
     track_id: trackId,
     role,
     created_at: nowIso(),
+    artist_id: artistId ?? null,
   };
 
   const { data, error } = await supabase
     .from("artist_tracks")
-    .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true })
-    .select("artist_id");
+    .upsert(row, { onConflict: "artist_key,track_id", ignoreDuplicates: true })
+    .select("artist_key");
 
   if (error) throw new Error(`[phase3][artist_tracks] ${error.message}`);
 
@@ -289,11 +295,11 @@ async function ingestOne(
       const featured = kind === "playlist" ? t.artistRuns.slice(1) : [];
 
       const { artistId: primaryId } = await upsertArtistAndGetId(primary);
-      if (primaryId) await linkArtistTrack(primaryId, trackId, "primary", primary.artistKey);
+      await linkArtistTrack(primaryId, trackId, "primary", primary.artistKey);
 
       for (const feat of featured) {
         const { artistId: featId } = await upsertArtistAndGetId(feat);
-        if (featId) await linkArtistTrack(featId, trackId, "featured", feat.artistKey);
+        await linkArtistTrack(featId, trackId, "featured", feat.artistKey);
       }
     })
   );
