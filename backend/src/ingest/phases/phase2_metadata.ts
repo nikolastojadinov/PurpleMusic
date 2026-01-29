@@ -40,13 +40,14 @@ function pickBestThumbnail(thumbnails?: any): string | null {
   return scored[0].url;
 }
 
-function pickCoverUrl(raw: any): string | null {
-  return (
+function pickCoverUrl(raw: any): { coverUrl: string | null; thumbnails: any } {
+  const thumbnails = (raw as any)?.thumbnails || null;
+  const coverUrl =
     normalize((raw as any)?.imageUrl) ||
     normalize((raw as any)?.thumbnail) ||
-    pickBestThumbnail((raw as any)?.thumbnails || raw) ||
-    null
-  );
+    pickBestThumbnail(thumbnails || raw) ||
+    null;
+  return { coverUrl, thumbnails };
 }
 
 function dedupeByExternalId<T extends { externalId: string }>(items: T[]): T[] {
@@ -63,38 +64,50 @@ function dedupeByExternalId<T extends { externalId: string }>(items: T[]): T[] {
 
 function mapAlbums(raw: RawAlbum[]): AlbumInput[] {
   return dedupeByExternalId(
-    (raw || []).map((album) => ({
-      externalId: (album as any)?.id,
-      title: (album as any)?.title,
-      albumType: null,
-      coverUrl: pickCoverUrl(album),
-      source: 'artist_browse',
-    } satisfies AlbumInput)),
+    (raw || []).map((album) => {
+      const { coverUrl, thumbnails } = pickCoverUrl(album);
+      return {
+        externalId: (album as any)?.id,
+        title: (album as any)?.title,
+        albumType: null,
+        coverUrl,
+        thumbnails,
+        source: 'artist_browse',
+      } satisfies AlbumInput;
+    }),
   );
 }
 
 function mapPlaylists(raw: RawPlaylist[]): PlaylistInput[] {
   return dedupeByExternalId(
-    (raw || []).map((playlist) => ({
-      externalId: (playlist as any)?.id,
-      title: (playlist as any)?.title,
-      coverUrl: pickCoverUrl(playlist),
-      playlistType: 'artist',
-      source: 'artist_browse',
-    } satisfies PlaylistInput)),
+    (raw || []).map((playlist) => {
+      const { coverUrl, thumbnails } = pickCoverUrl(playlist);
+      return {
+        externalId: (playlist as any)?.id,
+        title: (playlist as any)?.title,
+        coverUrl,
+        // thumbnails are not persisted for playlists but retained for best URL picking
+        playlistType: 'artist',
+        source: 'artist_browse',
+        thumbnails,
+      } satisfies PlaylistInput as any;
+    }),
   );
 }
 
 function mapTopSongs(raw: RawTopSong[]): TrackInput[] {
   return dedupeByExternalId(
-    (raw || []).map((song) => ({
-      externalId: (song as any)?.id,
-      title: (song as any)?.title,
-      durationSec: toSeconds((song as any)?.duration || null),
-      imageUrl: pickCoverUrl(song),
-      isVideo: true,
-      source: 'artist_top_song',
-    } satisfies TrackInput)),
+    (raw || []).map((song) => {
+      const { coverUrl } = pickCoverUrl(song);
+      return {
+        externalId: (song as any)?.id,
+        title: (song as any)?.title,
+        durationSec: toSeconds((song as any)?.duration || null),
+        imageUrl: coverUrl,
+        isVideo: true,
+        source: 'artist_top_song',
+      } satisfies TrackInput;
+    }),
   );
 }
 
