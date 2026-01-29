@@ -47,6 +47,12 @@ export async function upsertPlaylists(inputs: PlaylistInput[]): Promise<{ map: I
 
   if (!rows.length) return { map: {}, count: 0 };
 
+  console.info('[debug][upsertPlaylists] rows_sample', rows.slice(0, 3).map((r) => ({
+    external_id: r.external_id,
+    cover_url: r.cover_url ?? null,
+    title: r.title,
+  })));
+
   const { error } = await supabase.from('playlists').upsert(rows, { onConflict: 'external_id' });
   if (error) throw new Error(`[playlist_upsert] ${error.message}`);
 

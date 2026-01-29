@@ -50,6 +50,12 @@ export async function upsertTracks(inputs: TrackInput[]): Promise<{ map: IdMap; 
 
   if (!rows.length) return { map: {}, idMap: {}, count: 0 };
 
+  console.info('[debug][upsertTracks] rows_sample', rows.slice(0, 3).map((r) => ({
+    external_id: r.external_id,
+    image_url: r.image_url ?? null,
+    title: r.title,
+  })));
+
   const { error } = await supabase.from('tracks').upsert(rows, { onConflict: 'external_id' });
   if (error) throw new Error(`[track_upsert] ${error.message}`);
 

@@ -55,6 +55,12 @@ export async function upsertAlbums(inputs: AlbumInput[], artistId: string): Prom
 
   if (!rows.length) return { map: {}, count: 0 };
 
+  console.info('[debug][upsertAlbums] rows_sample', rows.slice(0, 3).map((r) => ({
+    external_id: r.external_id,
+    cover_url: r.cover_url ?? null,
+    title: r.title,
+  })));
+
   const { error } = await supabase.from('albums').upsert(rows, { onConflict: 'external_id' });
   if (error) throw new Error(`[album_upsert] ${error.message}`);
 
