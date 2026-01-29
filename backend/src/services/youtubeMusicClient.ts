@@ -963,7 +963,15 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
       pickText(renderer?.accessibilityLabel);
     if (!title) return null;
 
-    const artist = pickRunsText(renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs);
+    let artist = pickRunsText(renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs);
+    if (!artist) {
+      artist =
+        pickRunsText(renderer?.shortBylineText?.runs) ||
+        pickText(renderer?.shortBylineText) ||
+        pickText(renderer?.longBylineText) ||
+        pickRunsText(renderer?.subtitle?.runs) ||
+        pickText(renderer?.subtitle);
+    }
     const duration =
       pickRunsText(renderer?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text?.runs) ||
       pickText(renderer?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text) ||
@@ -1004,7 +1012,11 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     const videoId = normalizeString(renderer?.videoId);
     if (!looksLikeVideoId(videoId)) return;
     const trackTitle = pickText(renderer?.title);
-    const artist = pickText(renderer?.shortBylineText) || pickText(renderer?.longBylineText) || "";
+    const artist =
+      pickRunsText(renderer?.shortBylineText?.runs) ||
+      pickText(renderer?.shortBylineText) ||
+      pickText(renderer?.longBylineText) ||
+      "";
     const duration = pickText(renderer?.lengthText) || normalizeString((renderer?.lengthSeconds as any) ?? "");
     const thumb = pickThumbnail(renderer?.thumbnail?.thumbnails);
     if (!trackTitle) return;
@@ -1025,9 +1037,12 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     if (!Array.isArray(contents)) return;
     contents.forEach((item: any, idx: number) => {
       const baseLabel = `${label}[${idx}]`;
-      if (item?.musicResponsiveListItemRenderer) parseResponsive(item.musicResponsiveListItemRenderer, `${baseLabel}.musicResponsiveListItemRenderer`);
-      if (item?.playlistPanelVideoRenderer) parsePanel(item.playlistPanelVideoRenderer, `${baseLabel}.playlistPanelVideoRenderer`);
-      if (item?.playlistVideoRenderer) parsePlaylistVideo(item.playlistVideoRenderer, `${baseLabel}.playlistVideoRenderer`);
+      if (item?.playlistVideoRenderer)
+        parsePlaylistVideo(item.playlistVideoRenderer, `${baseLabel}.playlistVideoRenderer`);
+      if (item?.playlistPanelVideoRenderer)
+        parsePanel(item.playlistPanelVideoRenderer, `${baseLabel}.playlistPanelVideoRenderer`);
+      if (item?.musicResponsiveListItemRenderer)
+        parseResponsive(item.musicResponsiveListItemRenderer, `${baseLabel}.musicResponsiveListItemRenderer`);
       if (item?.playlistItemData) parsePlaylistItemData(item, `${baseLabel}.playlistItemData`);
 
       if (item?.musicPlaylistShelfRenderer) parseMusicShelf(item.musicPlaylistShelfRenderer, `${baseLabel}.musicPlaylistShelfRenderer`);
