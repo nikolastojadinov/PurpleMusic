@@ -2,10 +2,7 @@
 
 import pLimit from "p-limit";
 import supabase from "../../lib/supabase";
-import {
-  browsePlaylistById,
-  type PlaylistBrowse,
-} from "../../services/youtubeMusicClient";
+import { browsePlaylistById, type PlaylistBrowse } from "../../services/youtubeMusicClient";
 import {
   linkAlbumTracks,
   linkArtistTracks,
@@ -41,6 +38,14 @@ export type Phase3Output = {
 const CONCURRENCY = 3;
 
 // ---------- helpers ----------
+
+type ArtistRun = { name: string; browseId: string | null; artistKey: string };
+
+type BuiltTrack = {
+  input: TrackInput;
+  artistRuns: ArtistRun[];
+  videoId: string;
+};
 
 function shouldSkipRadioMix(externalIdRaw: string): boolean {
   const upper = normalize(externalIdRaw).toUpperCase();
@@ -81,9 +86,7 @@ function normalizeArtistKey(name: string): string {
   return underscored || "artist";
 }
 
-type ArtistRun = { name: string; browseId: string | null; artistKey: string };
-
-function extractPlaylistTrackArtistNames(rawItem: any): ArtistRun[] {
+function extractPlaylistTrackArtists(rawItem: any): ArtistRun[] {
   const runs = rawItem?.shortBylineText?.runs;
   if (!runs || !Array.isArray(runs)) return [];
 
@@ -94,12 +97,9 @@ function extractPlaylistTrackArtistNames(rawItem: any): ArtistRun[] {
     const name = typeof r?.text === "string" ? r.text.trim() : "";
     if (!name) return;
 
-    const browseId = normalize(
-      r?.navigationEndpoint?.browseEndpoint?.browseId ?? ""
-    );
+    const browseId = normalize(r?.navigationEndpoint?.browseEndpoint?.browseId ?? "");
     const artistKey = browseId || normalizeArtistKey(name);
     if (!artistKey) return;
-
     if (seen.has(artistKey)) return;
     seen.add(artistKey);
 
@@ -109,20 +109,24 @@ function extractPlaylistTrackArtistNames(rawItem: any): ArtistRun[] {
   return artists;
 }
 
-async function upsertStubArtist(name: string, artistKey: string): Promise<string | null> {
-  const cleaned = normalize(name);
-  const key = normalize(artistKey);
+async function upsertStubArtist(run: ArtistRun): Promise<string | null> {
+  const cleaned = normalize(run.name);
+  const key = normalize(run.artistKey);
   if (!cleaned || !key) return null;
 
-  const row = {
+  const timestamp = nowIso();
+  const row: Record<string, any> = {
     artist_key: key,
     name: cleaned,
+    youtube_channel_id: run.browseId ?? null,
+    source: "playlist_track",
+    created_at: timestamp,
   };
 
   const { error } = await supabase
     .from("artists")
     .upsert(row, { onConflict: "artist_key", ignoreDuplicates: true });
-  if (error) throw new Error(`[playlist_stub_artist] ${error.message}`);
+  if (error) throw new Error(`[artist_upsert] ${error.message}`);
 
   const { data, error: selectError } = await supabase
     .from("artists")
@@ -130,16 +134,14 @@ async function upsertStubArtist(name: string, artistKey: string): Promise<string
     .eq("artist_key", key)
     .limit(1)
     .single();
-  if (selectError) throw new Error(`[playlist_stub_artist_select] ${selectError.message}`);
+  if (selectError) throw new Error(`[artist_upsert_select] ${selectError.message}`);
 
   const artistId = data?.id ? String(data.id) : null;
-  if (artistId) {
-    console.log("[debug][stubArtistUpsert] inserted", { artist_key: key });
-  }
+  console.log("[artist-upsert] inserted or skipped", { artist_key: key });
   return artistId;
 }
 
-async function linkFeaturedArtistTrack(artistId: string, trackId: string): Promise<void> {
+async function linkFeaturedArtistTrack(artistId: string, trackId: string, artistKey: string): Promise<void> {
   if (!artistId || !trackId) return;
   const row = {
     artist_id: artistId,
@@ -150,17 +152,9 @@ async function linkFeaturedArtistTrack(artistId: string, trackId: string): Promi
   const { error } = await supabase
     .from("artist_tracks")
     .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true });
-  if (error) throw new Error(`[playlist_featured_link] ${error.message}`);
-  console.log("[debug][featuredLink] linked", { track_id: trackId, artist_id: artistId });
+  if (error) throw new Error(`[artist_tracks_link] ${error.message}`);
+  console.log("[artist-tracks] linked track -> artist_key", { track_id: trackId, artist_key: artistKey });
 }
-
-// ---------- building ----------
-
-type BuiltTrack = {
-  input: TrackInput;
-  artistRuns: ArtistRun[];
-  videoId: string;
-};
 
 function buildTrackInputs(
   tracks: PlaylistBrowse["tracks"],
@@ -180,9 +174,7 @@ function buildTrackInputs(
         extractBestImageUrl(parentPlaylist) ||
         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
-      const artistRuns = extractPlaylistTrackArtistNames(t);
-
-      console.log("[debug][trackImageFix]", { videoId, resolved: imageUrl });
+      const artistRuns = extractPlaylistTrackArtists(t);
       if (artistRuns.length) {
         console.log("[debug][playlistArtists]", {
           track: normalize(t?.title) || "Untitled",
@@ -198,6 +190,8 @@ function buildTrackInputs(
         isVideo: true,
         source: "ingest",
       };
+
+      console.log("[debug][trackImageFix]", { videoId, resolved: imageUrl });
 
       return { input, artistRuns, videoId } satisfies BuiltTrack;
     })
@@ -251,9 +245,9 @@ async function ingestOne(
         const trackId = map[t.input.externalId];
         if (!trackId || !t.artistRuns.length) return;
         for (const artist of t.artistRuns) {
-          const artistId = await upsertStubArtist(artist.name, artist.artistKey);
+          const artistId = await upsertStubArtist(artist);
           if (!artistId) continue;
-          await linkFeaturedArtistTrack(artistId, trackId);
+          await linkFeaturedArtistTrack(artistId, trackId, artist.artistKey);
         }
       })
     );
