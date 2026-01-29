@@ -5,7 +5,6 @@ import supabase from "../../lib/supabase";
 import { browsePlaylistById, type PlaylistBrowse } from "../../services/youtubeMusicClient";
 import {
   linkAlbumTracks,
-  linkArtistTracks,
   linkPlaylistTracks,
   normalize,
   nowIso,
@@ -39,7 +38,11 @@ const CONCURRENCY = 3;
 
 // ---------- helpers ----------
 
-type ArtistRun = { name: string; browseId: string | null; artistKey: string };
+type ArtistRun = {
+  name: string;
+  artistKey: string;
+  youtubeChannelId: string | null;
+};
 
 type BuiltTrack = {
   input: TrackInput;
@@ -80,10 +83,14 @@ function getTrackVideoId(t: any): string {
   return normalize(t?.videoId ?? (t as any)?.external_id ?? "");
 }
 
-function normalizeArtistKey(name: string): string {
-  const base = normalize(name).toLowerCase();
-  const underscored = base.replace(/\s+/g, "_");
-  return underscored || "artist";
+function canonicalArtistKey(name: string): string {
+  const base = normalize(name)
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9_\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return base.replace(/\s+/g, "_").replace(/^_+|_+$/g, "") || "artist";
 }
 
 function extractPlaylistTrackArtists(rawItem: any): ArtistRun[] {
@@ -95,65 +102,105 @@ function extractPlaylistTrackArtists(rawItem: any): ArtistRun[] {
 
   runs.forEach((r: any) => {
     const name = typeof r?.text === "string" ? r.text.trim() : "";
-    if (!name) return;
+    const browseIdRaw = r?.navigationEndpoint?.browseEndpoint?.browseId;
+    const browseId = typeof browseIdRaw === "string" ? browseIdRaw.trim() : "";
+    if (!name || !browseId) return;
 
-    const browseId = normalize(r?.navigationEndpoint?.browseEndpoint?.browseId ?? "");
-    const artistKey = browseId || normalizeArtistKey(name);
-    if (!artistKey) return;
-    if (seen.has(artistKey)) return;
+    const artistKey = canonicalArtistKey(name);
+    if (!artistKey || seen.has(artistKey)) return;
     seen.add(artistKey);
 
-    artists.push({ name, browseId: browseId || null, artistKey });
+    const youtubeChannelId = browseId.startsWith("UC") ? browseId : null;
+    artists.push({ name, artistKey, youtubeChannelId });
   });
 
   return artists;
 }
 
-async function upsertStubArtist(run: ArtistRun): Promise<string | null> {
-  const cleaned = normalize(run.name);
-  const key = normalize(run.artistKey);
-  if (!cleaned || !key) return null;
+async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string | null; action: string }> {
+  const name = normalize(run.name);
+  const artistKey = normalize(run.artistKey);
+  if (!name || !artistKey) return { artistId: null, action: "skip" };
 
-  const timestamp = nowIso();
-  const row: Record<string, any> = {
-    artist_key: key,
-    name: cleaned,
-    youtube_channel_id: run.browseId ?? null,
-    source: "playlist_track",
-    created_at: timestamp,
-  };
+  const now = nowIso();
 
-  const { error } = await supabase
+  const { data: existing, error: selectError } = await supabase
     .from("artists")
-    .upsert(row, { onConflict: "artist_key", ignoreDuplicates: true });
-  if (error) throw new Error(`[artist_upsert] ${error.message}`);
-
-  const { data, error: selectError } = await supabase
-    .from("artists")
-    .select("id")
-    .eq("artist_key", key)
+    .select("id, display_name, youtube_channel_id, source")
+    .eq("artist_key", artistKey)
     .limit(1)
-    .single();
-  if (selectError) throw new Error(`[artist_upsert_select] ${selectError.message}`);
+    .maybeSingle();
+  if (selectError) throw new Error(`[phase3][artist_select] ${selectError.message}`);
 
-  const artistId = data?.id ? String(data.id) : null;
-  console.log("[artist-upsert] inserted or skipped", { artist_key: key });
-  return artistId;
+  if (!existing) {
+    const insertRow = {
+      artist_key: artistKey,
+      name,
+      display_name: name,
+      youtube_channel_id: run.youtubeChannelId ?? null,
+      source: "playlist_track",
+      created_at: now,
+      updated_at: now,
+    };
+
+    const { data: inserted, error: insertError } = await supabase
+      .from("artists")
+      .insert(insertRow)
+      .select("id")
+      .single();
+    if (insertError) throw new Error(`[phase3][artist_insert] ${insertError.message}`);
+
+    const artistId = inserted?.id ? String(inserted.id) : null;
+    console.log("[phase3][artist-upsert]", { artist_key: artistKey, action: "insert", artist_id: artistId });
+    return { artistId, action: "insert" };
+  }
+
+  const updates: Record<string, any> = { updated_at: now };
+
+  if (!existing.display_name && name) {
+    updates.display_name = name;
+  }
+
+  if (!existing.youtube_channel_id && run.youtubeChannelId) {
+    updates.youtube_channel_id = run.youtubeChannelId;
+  }
+
+  if (!existing.source) {
+    updates.source = "playlist_track";
+  }
+
+  const { data: updated, error: updateError } = await supabase
+    .from("artists")
+    .update(updates)
+    .eq("artist_key", artistKey)
+    .select("id")
+    .single();
+  if (updateError) throw new Error(`[phase3][artist_update] ${updateError.message}`);
+
+  const artistId = updated?.id ? String(updated.id) : null;
+  console.log("[phase3][artist-upsert]", { artist_key: artistKey, action: "update", artist_id: artistId });
+  return { artistId, action: "update" };
 }
 
-async function linkFeaturedArtistTrack(artistId: string, trackId: string, artistKey: string): Promise<void> {
+async function linkArtistTrack(artistId: string, trackId: string, role: "primary" | "featured", artistKey: string) {
   if (!artistId || !trackId) return;
+
   const row = {
     artist_id: artistId,
     track_id: trackId,
-    role: "featured",
+    role,
     created_at: nowIso(),
   };
-  const { error } = await supabase
+
+  const { data, error } = await supabase
     .from("artist_tracks")
-    .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true });
-  if (error) throw new Error(`[artist_tracks_link] ${error.message}`);
-  console.log("[artist-tracks] linked track -> artist_key", { track_id: trackId, artist_key: artistKey });
+    .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true })
+    .select("artist_id");
+
+  if (error) throw new Error(`[phase3][artist_tracks] ${error.message}`);
+
+  const action = data && data.length ? "insert" : "skip";
+  console.log("[phase3][artist-tracks]", { trackId, artist_id: artistId, role, action, artist_key: artistKey });
 }
 
 function buildTrackInputs(
@@ -175,12 +222,14 @@ function buildTrackInputs(
         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
       const artistRuns = extractPlaylistTrackArtists(t);
-      if (artistRuns.length) {
-        console.log("[debug][playlistArtists]", {
-          track: normalize(t?.title) || "Untitled",
-          extracted: artistRuns.map(({ name, browseId }) => ({ name, browseId })),
-        });
-      }
+      console.log("[phase3][artists] extracted", {
+        trackId: externalId,
+        artists: artistRuns.map((a) => ({
+          name: a.name,
+          artist_key: a.artistKey,
+          youtube_channel_id: a.youtubeChannelId,
+        })),
+      });
 
       const input: TrackInput = {
         externalId,
@@ -239,23 +288,28 @@ async function ingestOne(
   const ordered = orderedTrackIds(browse.tracks, map);
   if (!ordered.length) return;
 
-  if (kind === "playlist") {
-    await Promise.all(
-      builtTracks.map(async (t) => {
-        const trackId = map[t.input.externalId];
-        if (!trackId || !t.artistRuns.length) return;
-        for (const artist of t.artistRuns) {
-          const artistId = await upsertStubArtist(artist);
-          if (!artistId) continue;
-          await linkFeaturedArtistTrack(artistId, trackId, artist.artistKey);
-        }
-      })
-    );
-  }
+  await Promise.all(
+    builtTracks.map(async (t) => {
+      const trackId = map[t.input.externalId];
+      if (!trackId) return;
 
-  if (kind === "album") {
-    await linkArtistTracks(artistId, ordered);
-  }
+      if (!t.artistRuns.length) {
+        console.log("[phase3][artists] extracted", { trackId: t.input.externalId, artists: [] });
+        return;
+      }
+
+      const primary = t.artistRuns[0];
+      const featured = kind === "playlist" ? t.artistRuns.slice(1) : [];
+
+      const { artistId: primaryId } = await upsertArtistAndGetId(primary);
+      if (primaryId) await linkArtistTrack(primaryId, trackId, "primary", primary.artistKey);
+
+      for (const feat of featured) {
+        const { artistId: featId } = await upsertArtistAndGetId(feat);
+        if (featId) await linkArtistTrack(featId, trackId, "featured", feat.artistKey);
+      }
+    })
+  );
 
   const collectionId = collectionMap[normalize(input.externalId)];
   if (collectionId) {
