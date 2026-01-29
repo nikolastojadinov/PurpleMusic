@@ -153,6 +153,17 @@ function splitArtists(raw: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
+function splitFeaturedArtistsFromTitle(title: string | null | undefined): string[] {
+  const value = normalize(title);
+  if (!value) return [];
+  const match = value.match(/\b(feat\.?|ft\.?)\b/i);
+  if (!match || match.index === undefined) return [];
+  const slice = value.slice(match.index); // keep everything from ft/feat onward
+  // Strip brackets that often wrap featured artists
+  const cleaned = slice.replace(/[\[\]\(\)]/g, ' ');
+  return splitArtists(cleaned);
+}
+
 function splitArtistsFromShortByline(shortByline: any): string[] {
   // shortBylineText.runs nosi listu imenā izvođača; spajamo i parsiramo kao i regularni artist string
   const runs = Array.isArray(shortByline?.runs)
@@ -625,6 +636,7 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
     artistNames: uniqueStrings([
       ...splitArtists(t.artist),
       ...splitArtistsFromShortByline((t as any).shortBylineText),
+      ...splitFeaturedArtistsFromTitle(t.title),
     ]),
     durationSeconds: toSeconds(t.duration),
     thumbnailUrl: t.thumbnail ?? null,
