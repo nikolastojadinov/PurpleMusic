@@ -156,8 +156,6 @@ async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string 
   }
 
   const updates: Record<string, any> = { updated_at: now };
-
-  // only update fields if we are actually improving data
   let needsUpdate = false;
 
   if (!existing.display_name && name) {
@@ -176,7 +174,6 @@ async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string 
   }
 
   if (!needsUpdate) {
-    console.log("[phase3][artist-upsert]", { artist_key: artistKey, action: "skip", artist_id: existing.id });
     return { artistId: String(existing.id), action: "skip" };
   }
 
@@ -188,12 +185,10 @@ async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string 
     .single();
   if (updateError) throw new Error(`[phase3][artist_update] ${updateError.message}`);
 
-  const artistId = updated?.id ? String(updated.id) : null;
-  console.log("[phase3][artist-upsert]", { artist_key: artistKey, action: "update", artist_id: artistId });
-  return { artistId, action: "update" };
+  return { artistId: String(updated.id), action: "update" };
 }
 
-async function linkArtistTrack(artistId: string, trackId: string, role: "primary" | "featured", artistKey: string) {
+async function linkArtistTrack(artistId: string, trackId: string, role: "primary" | "featured") {
   if (!artistId || !trackId) return;
 
   const row = {
@@ -203,15 +198,11 @@ async function linkArtistTrack(artistId: string, trackId: string, role: "primary
     created_at: nowIso(),
   };
 
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from("artist_tracks")
-    .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true })
-    .select("artist_id");
+    .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true });
 
   if (error) throw new Error(`[phase3][artist_tracks] ${error.message}`);
-
-  const action = data && data.length ? "insert" : "skip";
-  console.log("[phase3][artist-tracks]", { trackId, artist_id: artistId, role, action, artist_key: artistKey });
 }
 
 function buildTrackInputs(
@@ -224,7 +215,7 @@ function buildTrackInputs(
       const externalId = getTrackVideoId(t);
       if (!externalId) return null;
 
-      const videoId = normalize(t?.videoId ?? "") || normalize((t as any)?.external_id ?? "") || externalId;
+      const videoId = normalize(t?.videoId ?? "") || externalId;
 
       const imageUrl =
         extractBestImageUrl(t) ||
@@ -233,14 +224,6 @@ function buildTrackInputs(
         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
       const artistRuns = extractPlaylistTrackArtists(t);
-      console.log("[phase3][artists] extracted", {
-        trackId: externalId,
-        artists: artistRuns.map((a) => ({
-          name: a.name,
-          artist_key: a.artistKey,
-          youtube_channel_id: a.youtubeChannelId,
-        })),
-      });
 
       const input: TrackInput = {
         externalId,
@@ -251,9 +234,7 @@ function buildTrackInputs(
         source: "ingest",
       };
 
-      console.log("[debug][trackImageFix]", { videoId, resolved: imageUrl });
-
-      return { input, artistRuns, videoId } satisfies BuiltTrack;
+      return { input, artistRuns, videoId };
     })
     .filter(Boolean) as BuiltTrack[];
 }
@@ -279,15 +260,16 @@ async function ingestOne(
   const normalized = normalizePlaylistId(input.externalId);
   if (!normalized.valid) return;
 
-  const browse = await browsePlaylistById(normalized.id);
-
-  // ✅ TS-safe guard (browse can be null)
-  if (!browse?.tracks?.length) {
-    console.info(`[phase3][${kind}] EMPTY`, { externalId: input.externalId, browseId: normalized.id });
+  // ✅ force non-null by explicit check
+  const browseResult = await browsePlaylistById(normalized.id);
+  if (!browseResult || !browseResult.tracks || browseResult.tracks.length === 0) {
+    console.info(`[phase3][${kind}] EMPTY`, { externalId: input.externalId });
     return;
   }
 
-  // ✅ dump first track safely (no optional chaining, browse is guaranteed here)
+  // after this line, TypeScript knows browse is safe
+  const browse: PlaylistBrowse = browseResult;
+
   console.log("[DUMP_TRACK_0]", JSON.stringify(browse.tracks[0], null, 2));
   process.exit(0);
 
@@ -298,7 +280,6 @@ async function ingestOne(
   if (!builtTracks.length) return;
 
   const trackInputs = builtTracks.map((t) => t.input);
-  console.log("[debug][upsertTracks] image_url sample:", trackInputs[0]?.imageUrl ?? null);
 
   const { map } = await upsertTracks(trackInputs);
   const ordered = orderedTrackIds(browse.tracks, map);
@@ -309,20 +290,17 @@ async function ingestOne(
       const trackId = map[t.input.externalId];
       if (!trackId) return;
 
-      if (!t.artistRuns.length) {
-        console.log("[phase3][artists] extracted", { trackId: t.input.externalId, artists: [] });
-        return;
-      }
+      if (!t.artistRuns.length) return;
 
       const primary = t.artistRuns[0];
       const featured = kind === "playlist" ? t.artistRuns.slice(1) : [];
 
       const { artistId: primaryId } = await upsertArtistAndGetId(primary);
-      if (primaryId) await linkArtistTrack(primaryId, trackId, "primary", primary.artistKey);
+      if (primaryId) await linkArtistTrack(primaryId, trackId, "primary");
 
       for (const feat of featured) {
         const { artistId: featId } = await upsertArtistAndGetId(feat);
-        if (featId) await linkArtistTrack(featId, trackId, "featured", feat.artistKey);
+        if (featId) await linkArtistTrack(featId, trackId, "featured");
       }
     })
   );
@@ -332,29 +310,20 @@ async function ingestOne(
     if (kind === "album") await linkAlbumTracks(collectionId, ordered);
     if (kind === "playlist") await linkPlaylistTracks(collectionId, ordered);
   }
-
-  console.info(`[phase3][${kind}] OK`, {
-    externalId: input.externalId,
-    fetchedTracks: browse.tracks.length,
-    insertedTracks: ordered.length,
-  });
 }
 
 export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Output> {
   const limiter = pLimit(CONCURRENCY);
 
-  const albumTasks = params.albums.map((a) => limiter(() => ingestOne(params.artistId, a, params.albumIdMap, "album")));
+  const albumTasks = params.albums.map((a) =>
+    limiter(() => ingestOne(params.artistId, a, params.albumIdMap, "album"))
+  );
 
   const playlistTasks = params.playlists.map((p) =>
     limiter(() => ingestOne(params.artistId, p, params.playlistIdMap, "playlist"))
   );
 
   await Promise.all([...albumTasks, ...playlistTasks]);
-
-  console.info("[phase3] expansion_complete", {
-    albumsProcessed: params.albums.length,
-    playlistsProcessed: params.playlists.length,
-  });
 
   return {
     trackCount: 0,
