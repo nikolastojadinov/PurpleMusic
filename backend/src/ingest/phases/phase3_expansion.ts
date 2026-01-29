@@ -2,43 +2,32 @@
 
 import pLimit from "p-limit";
 import supabase from "../../lib/supabase";
-
-/**
- * ✅ CRITICAL FIX:
- * Phase3 MUST use the real working YouTube Music client parser,
- * NOT the thin wrapper in ../../ytmusic/innertubeClient.
- */
 import {
   browsePlaylistById,
   type PlaylistBrowse,
 } from "../../services/youtubeMusicClient";
-
 import {
   linkAlbumTracks,
   linkArtistTracks,
   linkPlaylistTracks,
   normalize,
-  toSeconds,
   nowIso,
+  toSeconds,
   type AlbumInput,
+  type IdMap,
   type PlaylistInput,
   type TrackInput,
-  type IdMap,
 } from "../utils";
 import { upsertTracks } from "../utils/upsertTracks";
 
 export type Phase3Input = {
   artistId: string;
   artistKey: string;
-
   albums: AlbumInput[];
   playlists: PlaylistInput[];
   topSongs: TrackInput[];
-
   albumIdMap: IdMap;
   playlistIdMap: IdMap;
-
-  // ✅ kept for compatibility with ingestOneArtist.ts
   albumExternalIds: string[];
   playlistExternalIds: string[];
 };
@@ -51,32 +40,21 @@ export type Phase3Output = {
 
 const CONCURRENCY = 3;
 
-type BuiltTrack = {
-  input: TrackInput;
-  artistNames: string[];
-  videoId: string;
-};
+// ---------- helpers ----------
 
 function shouldSkipRadioMix(externalIdRaw: string): boolean {
   const upper = normalize(externalIdRaw).toUpperCase();
   return upper.includes("RDCLAK") || upper.startsWith("RD");
 }
 
-/**
- * Normalize playlist/album browse IDs.
- */
 function normalizePlaylistId(externalIdRaw: string): { valid: boolean; id: string } {
   const externalId = normalize(externalIdRaw);
   if (!externalId) return { valid: false, id: "" };
-
   const upper = externalId.toUpperCase();
-
   if (upper.startsWith("VL")) return { valid: true, id: externalId };
   if (upper.startsWith("MPRE")) return { valid: true, id: externalId };
   if (upper.startsWith("OLAK5UY")) return { valid: true, id: externalId };
-
   if (upper.startsWith("PL")) return { valid: true, id: `VL${externalId}` };
-
   return { valid: false, id: "" };
 }
 
@@ -103,33 +81,39 @@ function normalizeArtistKey(name: string): string {
   return underscored || "artist";
 }
 
-function extractTrackArtistNames(t: any): string[] {
+function splitArtistNames(text: string): string[] {
+  if (!text) return [];
+  return text
+    .split(/[,•]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function extractPlaylistTrackArtistNames(rawItem: any): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
 
-  const add = (raw: unknown) => {
-    const value = typeof raw === "string" ? raw.trim() : "";
-    if (!value) return;
-    const key = value.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    names.push(value);
+  const add = (value: string) => {
+    splitArtistNames(value).forEach((name) => {
+      const key = name.toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      names.push(name);
+    });
   };
 
-  const runCollections = [
-    (t as any)?.artists,
-    (t as any)?.artist,
-    (t as any)?.subtitle?.runs,
-    (t as any)?.shortBylineText?.runs,
-  ];
+  const flexRuns =
+    rawItem?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs;
+  const shortRuns = rawItem?.shortBylineText?.runs;
+  const longRuns = rawItem?.longBylineText?.runs;
 
-  runCollections.forEach((runs: any) => {
+  [flexRuns, shortRuns, longRuns].forEach((runs) => {
     if (!runs || !Array.isArray(runs)) return;
-    runs.forEach((r: any) => add(r?.name ?? r?.text ?? r?.content ?? r));
+    runs.forEach((r: any) => {
+      const text = r?.text ?? r?.name ?? r?.content ?? "";
+      if (typeof text === "string" && text.trim()) add(text);
+    });
   });
-
-  add((t as any)?.author);
-  add((t as any)?.byline);
 
   return names;
 }
@@ -139,13 +123,11 @@ async function upsertStubArtist(name: string): Promise<string | null> {
   if (!cleaned) return null;
 
   const artistKey = normalizeArtistKey(cleaned);
-  const timestamp = nowIso();
-
   const row = {
     artist_key: artistKey,
     name: cleaned,
+    display_name: null,
     source: "playlist_track",
-    updated_at: timestamp,
   };
 
   const { error } = await supabase
@@ -162,31 +144,34 @@ async function upsertStubArtist(name: string): Promise<string | null> {
   if (selectError) throw new Error(`[playlist_stub_artist_select] ${selectError.message}`);
 
   const artistId = data?.id ? String(data.id) : null;
-
   if (artistId) {
-    console.log("[debug][stubArtist] inserted", { artist_key: artistKey, name: cleaned });
+    console.log("[debug][stubArtist] inserted", { artist_key: artistKey });
   }
-
   return artistId;
 }
 
 async function linkFeaturedArtistTrack(artistId: string, trackId: string): Promise<void> {
   if (!artistId || !trackId) return;
-
   const row = {
     artist_id: artistId,
     track_id: trackId,
     role: "featured",
     created_at: nowIso(),
   };
-
   const { error } = await supabase
     .from("artist_tracks")
     .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true });
   if (error) throw new Error(`[playlist_featured_link] ${error.message}`);
-
   console.log("[debug][featuredLink] linked", { track_id: trackId, artist_id: artistId });
 }
+
+// ---------- building ----------
+
+type BuiltTrack = {
+  input: TrackInput;
+  artistNames: string[];
+  videoId: string;
+};
 
 function buildTrackInputs(
   tracks: PlaylistBrowse["tracks"],
@@ -198,10 +183,7 @@ function buildTrackInputs(
       const externalId = getTrackVideoId(t);
       if (!externalId) return null;
 
-      const videoId =
-        normalize(t?.videoId ?? "") ||
-        normalize((t as any)?.external_id ?? "") ||
-        externalId;
+      const videoId = normalize(t?.videoId ?? "") || normalize((t as any)?.external_id ?? "") || externalId;
 
       const imageUrl =
         extractBestImageUrl(t) ||
@@ -209,12 +191,15 @@ function buildTrackInputs(
         extractBestImageUrl(parentPlaylist) ||
         `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
-      const artistNames = extractTrackArtistNames(t);
+      const artistNames = extractPlaylistTrackArtistNames(t) || [];
 
-      console.log("[debug][trackImageFix]", {
-        videoId,
-        resolved: imageUrl,
-      });
+      console.log("[debug][trackImageFix]", { videoId, resolved: imageUrl });
+      if (artistNames.length) {
+        console.log("[debug][playlistTrackArtists]", {
+          title: normalize(t?.title) || "Untitled",
+          artists: artistNames,
+        });
+      }
 
       const input: TrackInput = {
         externalId,
@@ -238,6 +223,8 @@ function orderedTrackIds(tracks: PlaylistBrowse["tracks"], idMap: IdMap): string
     .filter(Boolean);
 }
 
+// ---------- ingest ----------
+
 async function ingestOne(
   artistId: string,
   input: AlbumInput | PlaylistInput,
@@ -252,10 +239,7 @@ async function ingestOne(
   const browse = await browsePlaylistById(normalized.id);
 
   if (!browse?.tracks?.length) {
-    console.info(`[phase3][${kind}] EMPTY`, {
-      externalId: input.externalId,
-      browseId: normalized.id,
-    });
+    console.info(`[phase3][${kind}] EMPTY`, { externalId: input.externalId, browseId: normalized.id });
     return;
   }
 
@@ -266,20 +250,17 @@ async function ingestOne(
   if (!builtTracks.length) return;
 
   const trackInputs = builtTracks.map((t) => t.input);
-
   console.log("[debug][upsertTracks] image_url sample:", trackInputs[0]?.imageUrl ?? null);
 
   const { map } = await upsertTracks(trackInputs);
   const ordered = orderedTrackIds(browse.tracks, map);
-
   if (!ordered.length) return;
 
   if (kind === "playlist") {
     await Promise.all(
       builtTracks.map(async (t) => {
         const trackId = map[t.input.externalId];
-        if (!trackId) return;
-
+        if (!trackId || !t.artistNames.length) return;
         for (const artistName of t.artistNames) {
           const artistId = await upsertStubArtist(artistName);
           if (!artistId) continue;
@@ -289,10 +270,11 @@ async function ingestOne(
     );
   }
 
-  await linkArtistTracks(artistId, ordered);
+  if (kind === "album") {
+    await linkArtistTracks(artistId, ordered);
+  }
 
   const collectionId = collectionMap[normalize(input.externalId)];
-
   if (collectionId) {
     if (kind === "album") await linkAlbumTracks(collectionId, ordered);
     if (kind === "playlist") await linkPlaylistTracks(collectionId, ordered);
@@ -313,9 +295,7 @@ export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Out
   );
 
   const playlistTasks = params.playlists.map((p) =>
-    limiter(() =>
-      ingestOne(params.artistId, p, params.playlistIdMap, "playlist")
-    )
+    limiter(() => ingestOne(params.artistId, p, params.playlistIdMap, "playlist"))
   );
 
   await Promise.all([...albumTasks, ...playlistTasks]);
