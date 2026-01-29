@@ -156,25 +156,17 @@ async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string 
   }
 
   const updates: Record<string, any> = { updated_at: now };
-  let needsUpdate = false;
 
   if (!existing.display_name && name) {
     updates.display_name = name;
-    needsUpdate = true;
   }
 
   if (!existing.youtube_channel_id && run.youtubeChannelId) {
     updates.youtube_channel_id = run.youtubeChannelId;
-    needsUpdate = true;
   }
 
   if (!existing.source) {
     updates.source = "playlist_track";
-    needsUpdate = true;
-  }
-
-  if (!needsUpdate) {
-    return { artistId: String(existing.id), action: "skip" };
   }
 
   const { data: updated, error: updateError } = await supabase
@@ -185,10 +177,12 @@ async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string 
     .single();
   if (updateError) throw new Error(`[phase3][artist_update] ${updateError.message}`);
 
-  return { artistId: String(updated.id), action: "update" };
+  const artistId = updated?.id ? String(updated.id) : null;
+  console.log("[phase3][artist-upsert]", { artist_key: artistKey, action: "update", artist_id: artistId });
+  return { artistId, action: "update" };
 }
 
-async function linkArtistTrack(artistId: string, trackId: string, role: "primary" | "featured") {
+async function linkArtistTrack(artistId: string, trackId: string, role: "primary" | "featured", artistKey: string) {
   if (!artistId || !trackId) return;
 
   const row = {
@@ -198,11 +192,15 @@ async function linkArtistTrack(artistId: string, trackId: string, role: "primary
     created_at: nowIso(),
   };
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("artist_tracks")
-    .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true });
+    .upsert(row, { onConflict: "artist_id,track_id", ignoreDuplicates: true })
+    .select("artist_id");
 
   if (error) throw new Error(`[phase3][artist_tracks] ${error.message}`);
+
+  const action = data && data.length ? "insert" : "skip";
+  console.log("[phase3][artist-tracks]", { trackId, artist_id: artistId, role, action, artist_key: artistKey });
 }
 
 function buildTrackInputs(
@@ -215,7 +213,7 @@ function buildTrackInputs(
       const externalId = getTrackVideoId(t);
       if (!externalId) return null;
 
-      const videoId = normalize(t?.videoId ?? "") || externalId;
+      const videoId = normalize(t?.videoId ?? "") || normalize((t as any)?.external_id ?? "") || externalId;
 
       const imageUrl =
         extractBestImageUrl(t) ||
@@ -234,7 +232,7 @@ function buildTrackInputs(
         source: "ingest",
       };
 
-      return { input, artistRuns, videoId };
+      return { input, artistRuns, videoId } satisfies BuiltTrack;
     })
     .filter(Boolean) as BuiltTrack[];
 }
@@ -260,18 +258,13 @@ async function ingestOne(
   const normalized = normalizePlaylistId(input.externalId);
   if (!normalized.valid) return;
 
-  // ✅ force non-null by explicit check
-  const browseResult = await browsePlaylistById(normalized.id);
-  if (!browseResult || !browseResult.tracks || browseResult.tracks.length === 0) {
-    console.info(`[phase3][${kind}] EMPTY`, { externalId: input.externalId });
+  const browse = await browsePlaylistById(normalized.id);
+
+  // ✅ FIX: TypeScript null guard
+  if (!browse || !browse.tracks?.length) {
+    console.info(`[phase3][${kind}] EMPTY`, { externalId: input.externalId, browseId: normalized.id });
     return;
   }
-
-  // after this line, TypeScript knows browse is safe
-  const browse: PlaylistBrowse = browseResult;
-
-  console.log("[DUMP_TRACK_0]", JSON.stringify(browse.tracks[0], null, 2));
-  process.exit(0);
 
   const parentAlbum = kind === "album" ? (input as AlbumInput) : null;
   const parentPlaylist = kind === "playlist" ? (input as PlaylistInput) : null;
@@ -296,11 +289,11 @@ async function ingestOne(
       const featured = kind === "playlist" ? t.artistRuns.slice(1) : [];
 
       const { artistId: primaryId } = await upsertArtistAndGetId(primary);
-      if (primaryId) await linkArtistTrack(primaryId, trackId, "primary");
+      if (primaryId) await linkArtistTrack(primaryId, trackId, "primary", primary.artistKey);
 
       for (const feat of featured) {
         const { artistId: featId } = await upsertArtistAndGetId(feat);
-        if (featId) await linkArtistTrack(featId, trackId, "featured");
+        if (featId) await linkArtistTrack(featId, trackId, "featured", feat.artistKey);
       }
     })
   );
@@ -310,6 +303,12 @@ async function ingestOne(
     if (kind === "album") await linkAlbumTracks(collectionId, ordered);
     if (kind === "playlist") await linkPlaylistTracks(collectionId, ordered);
   }
+
+  console.info(`[phase3][${kind}] OK`, {
+    externalId: input.externalId,
+    fetchedTracks: browse.tracks.length,
+    insertedTracks: ordered.length,
+  });
 }
 
 export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Output> {
