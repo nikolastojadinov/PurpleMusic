@@ -157,16 +157,27 @@ async function upsertArtistAndGetId(run: ArtistRun): Promise<{ artistId: string 
 
   const updates: Record<string, any> = { updated_at: now };
 
+  // only update fields if we are actually improving data
+  let needsUpdate = false;
+
   if (!existing.display_name && name) {
     updates.display_name = name;
+    needsUpdate = true;
   }
 
   if (!existing.youtube_channel_id && run.youtubeChannelId) {
     updates.youtube_channel_id = run.youtubeChannelId;
+    needsUpdate = true;
   }
 
   if (!existing.source) {
     updates.source = "playlist_track";
+    needsUpdate = true;
+  }
+
+  if (!needsUpdate) {
+    console.log("[phase3][artist-upsert]", { artist_key: artistKey, action: "skip", artist_id: existing.id });
+    return { artistId: String(existing.id), action: "skip" };
   }
 
   const { data: updated, error: updateError } = await supabase
@@ -269,16 +280,16 @@ async function ingestOne(
   if (!normalized.valid) return;
 
   const browse = await browsePlaylistById(normalized.id);
-console.log(
-  "[DUMP_TRACK_0]",
-  JSON.stringify(browse.tracks?.[0], null, 2)
-);
 
-process.exit(0);
+  // ✅ TS-safe guard (browse can be null)
   if (!browse?.tracks?.length) {
     console.info(`[phase3][${kind}] EMPTY`, { externalId: input.externalId, browseId: normalized.id });
     return;
   }
+
+  // ✅ dump first track safely (no optional chaining, browse is guaranteed here)
+  console.log("[DUMP_TRACK_0]", JSON.stringify(browse.tracks[0], null, 2));
+  process.exit(0);
 
   const parentAlbum = kind === "album" ? (input as AlbumInput) : null;
   const parentPlaylist = kind === "playlist" ? (input as PlaylistInput) : null;
@@ -332,9 +343,7 @@ process.exit(0);
 export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Output> {
   const limiter = pLimit(CONCURRENCY);
 
-  const albumTasks = params.albums.map((a) =>
-    limiter(() => ingestOne(params.artistId, a, params.albumIdMap, "album"))
-  );
+  const albumTasks = params.albums.map((a) => limiter(() => ingestOne(params.artistId, a, params.albumIdMap, "album")));
 
   const playlistTasks = params.playlists.map((p) =>
     limiter(() => ingestOne(params.artistId, p, params.playlistIdMap, "playlist"))
