@@ -153,6 +153,16 @@ function splitArtists(raw: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
+function splitArtistsFromShortByline(shortByline: any): string[] {
+  // shortBylineText.runs nosi listu imenā izvođača; spajamo i parsiramo kao i regularni artist string
+  const runs = Array.isArray(shortByline?.runs)
+    ? shortByline.runs.map((r: any) => normalize(r?.text)).filter(Boolean)
+    : [];
+  const text = normalize(shortByline?.simpleText);
+  const joined = uniqueStrings([...runs, text]).join(',');
+  return splitArtists(joined);
+}
+
 function normalizeTrackSource(): 'youtube' {
   return 'youtube';
 }
@@ -612,7 +622,10 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
   const trackInputs: TrackInput[] = tracks.map((t) => ({
     youtubeId: normalize(t.videoId),
     title: normalize(t.title) || 'Untitled',
-    artistNames: splitArtists(t.artist),
+    artistNames: uniqueStrings([
+      ...splitArtists(t.artist),
+      ...splitArtistsFromShortByline((t as any).shortBylineText),
+    ]),
     durationSeconds: toSeconds(t.duration),
     thumbnailUrl: t.thumbnail ?? null,
     albumExternalId: payload.kind === 'album' ? browseKey : null,
