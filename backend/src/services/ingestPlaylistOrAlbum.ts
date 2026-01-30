@@ -70,6 +70,24 @@ type IdMap = Record<string, string>;
 type DerivedArtist = { key: string; display: string; normalizedName: string };
 type AlbumCompletion = { albumId: string | null; expected: number | null; actual: number; percent: number; state: 'unknown' | 'partial' | 'complete' };
 
+async function recordIngestRequest(payload: PlaylistOrAlbumIngest, opts?: PlaylistOrAlbumOptions): Promise<void> {
+  try {
+    const supabase = getSupabaseAdmin();
+    const envelope = { payload, options: opts ?? null } as const;
+    const { error } = await supabase.from('ingest_requests').insert({
+      source: payload.kind,
+      payload: envelope,
+      status: 'received',
+    });
+
+    if (error) {
+      console.warn('[ingest] failed to persist ingest request', { message: error.message });
+    }
+  } catch (err: any) {
+    console.warn('[ingest] unexpected error while persisting ingest request', { message: err?.message });
+  }
+}
+
 function normalize(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -629,6 +647,8 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
 
   // Default to writing artists for both playlists and albums unless explicitly disabled.
   const allowArtistWrite = opts?.allowArtistWrite !== false;
+
+  await recordIngestRequest(payload, opts);
   const providedPrimaryKeys = uniqueKeys(opts?.primaryArtistKeys ?? []);
   const browseKey = normalize(payload.browseId);
   if (!browseKey) return EMPTY_RESULT;
