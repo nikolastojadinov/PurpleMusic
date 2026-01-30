@@ -174,6 +174,33 @@ function splitArtistsFromShortByline(shortByline: any): string[] {
   return splitArtists(joined);
 }
 
+type TrackArtistCandidate = { name?: string | null; channelId?: string | null };
+
+function normalizeChannelId(value: string | null | undefined): string {
+  const channelId = normalize(value);
+  if (!channelId) return '';
+  return /^UC[0-9A-Za-z_-]+$/.test(channelId) ? channelId : '';
+}
+
+function buildArtistInputsFromTrackArtists(candidates: TrackArtistCandidate[]): ArtistInput[] {
+  if (!Array.isArray(candidates)) return [];
+
+  return candidates
+    .map((candidate) => {
+      const name = canonicalArtistName(normalize(candidate?.name));
+      if (!name) return null;
+
+      const channelId = normalizeChannelId(candidate?.channelId ?? (candidate as any)?.browseId);
+
+      return { name, displayName: name, channelId: channelId || null } satisfies ArtistInput;
+    })
+    .filter(Boolean) as ArtistInput[];
+}
+
+function uniqueArtistInputs(inputs: ArtistInput[]): ArtistInput[] {
+  return uniqueBy(inputs, (artist) => `${normalize(artist.channelId)}::${normalize(artist.name).toLowerCase()}`);
+}
+
 function normalizeTrackSource(): 'youtube' {
   return 'youtube';
 }
@@ -630,30 +657,41 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
 
   const title = normalize(payload.title) || browseKey;
   const artistsFromSubtitle = splitArtists(payload.subtitle);
-  const trackInputs: TrackInput[] = tracks.map((t) => ({
-    youtubeId: normalize(t.videoId),
-    title: normalize(t.title) || 'Untitled',
-    artistNames: uniqueStrings([
-      ...splitArtists(t.artist),
-      ...splitArtistsFromShortByline((t as any).shortBylineText),
-      ...splitFeaturedArtistsFromTitle(t.title),
-    ]),
-    durationSeconds: toSeconds(t.duration),
-    thumbnailUrl: t.thumbnail ?? null,
-    albumExternalId: payload.kind === 'album' ? browseKey : null,
-    isVideo: true,
-    source: payload.kind,
-  }));
+  const collectedArtistInputs: ArtistInput[] = artistsFromSubtitle.map((name) => {
+    const display = canonicalArtistName(name) || name;
+    return { name: display, displayName: display };
+  });
 
-  const collectedArtistNames = uniqueStrings([...artistsFromSubtitle, ...trackInputs.flatMap((t) => t.artistNames)]);
+  const trackInputs: TrackInput[] = tracks.map((t) => {
+    const trackArtists = buildArtistInputsFromTrackArtists(Array.isArray((t as any).artists) ? (t as any).artists : []);
+    collectedArtistInputs.push(...trackArtists);
+
+    return {
+      youtubeId: normalize(t.videoId),
+      title: normalize(t.title) || 'Untitled',
+      artistNames: uniqueStrings([
+        ...trackArtists.map((artist) => artist.displayName || artist.name),
+        ...splitArtists(t.artist),
+        ...splitArtistsFromShortByline((t as any).shortBylineText),
+        ...splitFeaturedArtistsFromTitle(t.title),
+      ]),
+      durationSeconds: toSeconds(t.duration),
+      thumbnailUrl: t.thumbnail ?? null,
+      albumExternalId: payload.kind === 'album' ? browseKey : null,
+      isVideo: true,
+      source: payload.kind,
+    };
+  });
+
+  const artistInputs = uniqueArtistInputs(collectedArtistInputs);
 
   let artistResult: ArtistResult = { keys: [], count: 0 };
-  if (allowArtistWrite) {
+  if (allowArtistWrite && artistInputs.length) {
     try {
-      artistResult = await upsertArtists(collectedArtistNames.map((name) => ({ name })) as ArtistInput[]);
+      artistResult = await upsertArtists(artistInputs as ArtistInput[]);
     } catch (err) {
       if (isDuplicateConstraint(err, 'artists_canonical_unique') || isDuplicateConstraint(err)) {
-        const derivedKeys = deriveArtistKeys(collectedArtistNames).map((a) => a.key);
+        const derivedKeys = deriveArtistKeys(artistInputs.map((a) => a.name)).map((a) => a.key);
         const safeKeys = uniqueKeys(derivedKeys);
         console.info('[upsertArtists] artist_exists_skip', { keys: safeKeys });
         artistResult = { keys: safeKeys, count: safeKeys.length };

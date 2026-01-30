@@ -13,6 +13,7 @@ import {
 import { upsertAlbums } from '../utils/upsertAlbums';
 import { upsertPlaylists } from '../utils/upsertPlaylists';
 import { linkArtistPlaylists } from '../utils/linkArtistPlaylists';
+import { linkArtistAlbums } from '../utils/linkArtistAlbums';
 import type { ArtistBrowse } from '../../ytmusic/innertubeClient';
 
 export type Phase2Output = {
@@ -134,9 +135,13 @@ export async function runPhase2Metadata(params: {
     upsertPlaylists(playlists),
   ]);
 
+  const albumIds = Object.values(albumIdMap || {}).filter((id) => Boolean(normalize(id)));
+  const linkedAlbums = albumIds.length ? await linkArtistAlbums(params.artistKey, albumIds) : 0;
+
   const playlistIds = Object.values(playlistIdMap || {}).filter((id) => Boolean(normalize(id)));
   const linked = playlistIds.length ? await linkArtistPlaylists(params.artistId, playlistIds) : 0;
   console.info('[phase2] linked playlists to artist', { artistId: params.artistId, playlistCount: playlistIds.length, linked });
+  console.info('[phase2] linked albums to artist', { artistKey: params.artistKey, albumCount: albumIds.length, linked: linkedAlbums });
 
   const albumExternalIds = albums.map((a) => a.externalId);
   const playlistExternalIds = playlists.map((p) => p.externalId);

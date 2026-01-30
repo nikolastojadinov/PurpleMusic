@@ -15,6 +15,7 @@ import {
   type TrackInput,
 } from "../utils";
 import { upsertTracks } from "../utils/upsertTracks";
+import { linkArtistAlbums } from "../utils/linkArtistAlbums";
 
 export type Phase3Input = {
   artistId: string;
@@ -255,6 +256,7 @@ function orderedTrackIds(tracks: PlaylistBrowse["tracks"], idMap: IdMap): string
 
 async function ingestOne(
   artistId: string,
+  artistKey: string,
   input: AlbumInput | PlaylistInput,
   collectionMap: IdMap,
   kind: "album" | "playlist"
@@ -307,6 +309,7 @@ async function ingestOne(
   const collectionId = collectionMap[normalize(input.externalId)];
   if (collectionId) {
     if (kind === "album") await linkAlbumTracks(collectionId, ordered);
+    if (kind === "album") await linkArtistAlbums(artistKey, [collectionId]);
     if (kind === "playlist") await linkPlaylistTracks(collectionId, ordered);
   }
 
@@ -321,11 +324,11 @@ export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Out
   const limiter = pLimit(CONCURRENCY);
 
   const albumTasks = params.albums.map((a) =>
-    limiter(() => ingestOne(params.artistId, a, params.albumIdMap, "album"))
+    limiter(() => ingestOne(params.artistId, params.artistKey, a, params.albumIdMap, "album"))
   );
 
   const playlistTasks = params.playlists.map((p) =>
-    limiter(() => ingestOne(params.artistId, p, params.playlistIdMap, "playlist"))
+    limiter(() => ingestOne(params.artistId, params.artistKey, p, params.playlistIdMap, "playlist"))
   );
 
   await Promise.all([...albumTasks, ...playlistTasks]);

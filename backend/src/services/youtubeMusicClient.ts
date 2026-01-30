@@ -79,7 +79,15 @@ export type PlaylistBrowse = {
   title: string;
   subtitle: string;
   thumbnailUrl: string | null;
-  tracks: Array<{ videoId: string; title: string; artist: string; duration?: string | null; thumbnail?: string | null; shortBylineText?: any }>;
+  tracks: Array<{
+    videoId: string;
+    title: string;
+    artist: string;
+    artists?: Array<{ name: string; channelId?: string | null }>;
+    duration?: string | null;
+    thumbnail?: string | null;
+    shortBylineText?: any;
+  }>;
 };
 
 type ParsedItem = {
@@ -942,6 +950,43 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     shelvesVisited: 0,
   };
 
+  const extractArtistItemsFromRuns = (runs: any): PlaylistBrowse["tracks"][number]["artists"] => {
+    if (!Array.isArray(runs)) return [];
+
+    const seen = new Set<string>();
+    const items: NonNullable<PlaylistBrowse["tracks"][number]["artists"]> = [];
+
+    runs.forEach((r: any) => {
+      const name = normalizeString(r?.text);
+      if (!name) return;
+
+      const browseId = normalizeString(r?.navigationEndpoint?.browseEndpoint?.browseId);
+      const channelId = browseId && browseId.startsWith("UC") ? browseId : null;
+
+      const token = `${name.toLowerCase()}::${channelId ?? ""}`;
+      if (seen.has(token)) return;
+      seen.add(token);
+
+      items.push({ name, channelId });
+    });
+
+    return items;
+  };
+
+  const selectArtistRuns = (renderer: any): any[] => {
+    const candidates = [
+      renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs,
+      renderer?.shortBylineText?.runs,
+      renderer?.subtitle?.runs,
+    ];
+
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate) && candidate.length) return candidate;
+    }
+
+    return [];
+  };
+
   const logBrowseDebug = (label: string, payload?: Record<string, unknown>) => {
     if (!BROWSE_DEBUG) return;
     console.info(`[browse/playlist][debug] ${label}`, payload ?? {});
@@ -957,19 +1002,19 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     const videoId = extractVideoIdFromResponsive(renderer);
     if (!looksLikeVideoId(videoId)) return null;
 
+    const artistRuns = selectArtistRuns(renderer);
+
     const title =
       pickRunsText(renderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs) ||
       pickText(renderer?.title) ||
       pickText(renderer?.accessibilityLabel);
     if (!title) return null;
 
-    let artist = pickRunsText(renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs);
+    let artist = pickRunsText(artistRuns);
     if (!artist) {
       artist =
-        pickRunsText(renderer?.shortBylineText?.runs) ||
         pickText(renderer?.shortBylineText) ||
         pickText(renderer?.longBylineText) ||
-        pickRunsText(renderer?.subtitle?.runs) ||
         pickText(renderer?.subtitle);
     }
     const duration =
@@ -982,7 +1027,15 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
       pickThumbnail(renderer?.thumbnail?.thumbnails) ||
       null;
 
-    return { videoId, title, artist, duration: duration || null, thumbnail: thumb, shortBylineText: renderer?.shortBylineText };
+    return {
+      videoId,
+      title,
+      artist,
+      artists: extractArtistItemsFromRuns(artistRuns),
+      duration: duration || null,
+      thumbnail: thumb,
+      shortBylineText: renderer?.shortBylineText,
+    };
   };
 
   function parseResponsive(renderer: any, source: string) {
@@ -999,12 +1052,21 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     const videoId = normalizeString(panel?.videoId);
     if (!looksLikeVideoId(videoId)) return;
     const trackTitle = pickText(panel?.title);
-    const artist = pickText(panel?.shortBylineText) || pickText(panel?.longBylineText) || "";
+    const artistRuns = Array.isArray(panel?.shortBylineText?.runs) ? panel.shortBylineText.runs : [];
+    const artist = pickRunsText(artistRuns) || pickText(panel?.shortBylineText) || pickText(panel?.longBylineText) || "";
     const duration = pickText(panel?.lengthText) || normalizeString((panel?.lengthSeconds as any) ?? "");
     const thumb = pickThumbnail(panel?.thumbnail?.thumbnails);
     if (!trackTitle) return;
     stats.panelParsed += 1;
-    pushTrack({ videoId, title: trackTitle, artist, duration: duration || null, thumbnail: thumb, shortBylineText: panel?.shortBylineText }, source);
+    pushTrack({
+      videoId,
+      title: trackTitle,
+      artist,
+      artists: extractArtistItemsFromRuns(artistRuns),
+      duration: duration || null,
+      thumbnail: thumb,
+      shortBylineText: panel?.shortBylineText,
+    }, source);
   }
 
   function parsePlaylistVideo(renderer: any, source: string) {
@@ -1012,8 +1074,9 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     const videoId = normalizeString(renderer?.videoId);
     if (!looksLikeVideoId(videoId)) return;
     const trackTitle = pickText(renderer?.title);
+    const artistRuns = Array.isArray(renderer?.shortBylineText?.runs) ? renderer.shortBylineText.runs : [];
     const artist =
-      pickRunsText(renderer?.shortBylineText?.runs) ||
+      pickRunsText(artistRuns) ||
       pickText(renderer?.shortBylineText) ||
       pickText(renderer?.longBylineText) ||
       "";
@@ -1021,7 +1084,15 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     const thumb = pickThumbnail(renderer?.thumbnail?.thumbnails);
     if (!trackTitle) return;
     stats.playlistVideoParsed += 1;
-    pushTrack({ videoId, title: trackTitle, artist, duration: duration || null, thumbnail: thumb, shortBylineText: renderer?.shortBylineText }, source);
+    pushTrack({
+      videoId,
+      title: trackTitle,
+      artist,
+      artists: extractArtistItemsFromRuns(artistRuns),
+      duration: duration || null,
+      thumbnail: thumb,
+      shortBylineText: renderer?.shortBylineText,
+    }, source);
   }
 
   function parsePlaylistItemData(item: any, source: string) {
