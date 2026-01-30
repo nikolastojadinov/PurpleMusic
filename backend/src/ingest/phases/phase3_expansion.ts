@@ -1,4 +1,6 @@
 // target file: backend/src/ingest/phases/phase3_expansion.ts
+// ONLY CHANGE: mark Top Songs links with is_top_song=true
+// Everything else stays identical.
 
 import pLimit from "p-limit";
 import supabase from "../../lib/supabase";
@@ -62,7 +64,16 @@ async function ingestTopSongs(artistId: string, artistKey: string, topSongs: Tra
     entries.map(async ([externalId, trackId]) => {
       if (!trackId) return;
       const idx = valid.findIndex((t) => normalize(t.externalId) === normalize(externalId));
-      await linkArtistTrack(artistId, trackId, "primary", artistKey, idx >= 0 ? idx : 0);
+
+      // ✅ FIX: mark these links as Top Songs
+      await linkArtistTrack(
+        artistId,
+        trackId,
+        "primary",
+        artistKey,
+        idx >= 0 ? idx : 0,
+        true
+      );
     })
   );
 
@@ -216,7 +227,10 @@ async function linkArtistTrack(
   trackId: string,
   role: "primary" | "featured",
   artistKey: string,
-  position?: number
+  position?: number,
+
+  // ✅ NEW (default false, no impact on existing logic)
+  isTopSong: boolean = false
 ) {
   if (!artistKey || !trackId) return;
 
@@ -226,6 +240,9 @@ async function linkArtistTrack(
     role,
     position: Number.isFinite(position) ? Number(position) : 0,
     artist_id: artistId ?? null,
+
+    // ✅ FIX: this is what populates Top Songs
+    is_top_song: isTopSong,
   };
 
   const { data, error } = await supabase
@@ -352,6 +369,7 @@ async function ingestOne(
 export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Output> {
   const limiter = pLimit(CONCURRENCY);
 
+  // ✅ Top Songs now correctly populate artist_tracks.is_top_song=true
   const topSongCount = await ingestTopSongs(params.artistId, params.artistKey, params.topSongs || []);
 
   const albumTasks = params.albums.map((a) =>
