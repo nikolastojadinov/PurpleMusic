@@ -345,7 +345,7 @@ async function recordChannelRawBrowse(browseId: string, raw: unknown): Promise<v
     const client = getSupabaseAdmin();
     const { error } = await client
       .from('ingest_requests')
-      .insert({ source: 'channel', status: 'raw', payload: { browseId, raw } });
+      .insert({ source: 'artist', status: 'raw', payload: { browseId, raw } });
     if (error) {
       console.warn('[innertube][channel][raw_insert_failed]', { browseId, message: error.message });
     } else {
