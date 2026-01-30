@@ -972,20 +972,11 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     return items;
   };
 
-  const selectArtistRuns = (renderer: any): any[] => {
-    const candidates = [
-      renderer?.longBylineText?.runs,
-      renderer?.shortBylineText?.runs,
-      renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs,
-      renderer?.subtitle?.runs,
-    ];
-
-    for (const candidate of candidates) {
-      if (Array.isArray(candidate) && candidate.length) return candidate;
-    }
-
-    return [];
-  };
+    const selectArtistRuns = (renderer: any): any[] => {
+      // Innertube playlist browse: artists are in flexColumns[1].text.runs per track.
+      const runs = renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs;
+      return Array.isArray(runs) ? runs : [];
+    };
 
   const logBrowseDebug = (label: string, payload?: Record<string, unknown>) => {
     if (!BROWSE_DEBUG) return;
@@ -998,7 +989,7 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     renderSources.add(source);
   };
 
-  const buildTrackFromResponsive = (renderer: any): PlaylistBrowse["tracks"][number] | null => {
+    const buildTrackFromResponsive = (renderer: any): PlaylistBrowse["tracks"][number] | null => {
     const videoId = extractVideoIdFromResponsive(renderer);
     if (!looksLikeVideoId(videoId)) return null;
 
@@ -1010,13 +1001,7 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
       pickText(renderer?.accessibilityLabel);
     if (!title) return null;
 
-    let artist = pickRunsText(artistRuns);
-    if (!artist) {
-      artist =
-        pickText(renderer?.shortBylineText) ||
-        pickText(renderer?.longBylineText) ||
-        pickText(renderer?.subtitle);
-    }
+      const artist = pickRunsText(artistRuns);
     const duration =
       pickRunsText(renderer?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text?.runs) ||
       pickText(renderer?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text) ||
