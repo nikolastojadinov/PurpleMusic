@@ -957,17 +957,16 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     const items: NonNullable<PlaylistBrowse["tracks"][number]["artists"]> = [];
 
     runs.forEach((r: any) => {
-      const name = normalizeString(r?.text);
-      if (!name) return;
+      const raw = normalizeString(r?.text);
+      // Ignore separators like bullets or short punctuation tokens.
+      if (!raw || (raw.length <= 2 && !/[A-Za-z0-9]/.test(raw))) return;
 
-      const browseId = normalizeString(r?.navigationEndpoint?.browseEndpoint?.browseId);
-      const channelId = browseId && browseId.startsWith("UC") ? browseId : null;
+      const key = raw.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
 
-      const token = `${name.toLowerCase()}::${channelId ?? ""}`;
-      if (seen.has(token)) return;
-      seen.add(token);
-
-      items.push({ name, channelId });
+      // Do not store channelId to avoid filtering on UC browseId presence.
+      items.push({ name: raw, channelId: null });
     });
 
     return items;
@@ -975,8 +974,9 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
 
   const selectArtistRuns = (renderer: any): any[] => {
     const candidates = [
-      renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs,
+      renderer?.longBylineText?.runs,
       renderer?.shortBylineText?.runs,
+      renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs,
       renderer?.subtitle?.runs,
     ];
 
