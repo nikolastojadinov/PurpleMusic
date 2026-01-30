@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from '../services/supabaseClient';
 export type YTThumbnail = { url: string; width?: number; height?: number };
 
 export type YTMusicTrack = {
+  id?: string;
   videoId: string;
   title: string;
   artist: string;
@@ -399,6 +400,22 @@ function findTopSongsShelf(raw: any): any | null {
   return shelf;
 }
 
+function parseTopSongsFromShelf(shelf: any, artistName: string): YTMusicTrack[] {
+  const items = Array.isArray(shelf?.contents) ? shelf.contents : [];
+  const tracks: YTMusicTrack[] = [];
+  const seen = new Set<string>();
+
+  items.forEach((item: any) => {
+    const candidate = item?.musicResponsiveListItemRenderer || item?.playlistPanelVideoRenderer || item;
+    const parsed = parseSongFromNode(candidate, artistName);
+    if (!parsed || !parsed.videoId || seen.has(parsed.videoId)) return;
+    seen.add(parsed.videoId);
+    tracks.push(parsed);
+  });
+
+  return tracks;
+}
+
 function extractArtistBrowseIdFromSearch(root: any): string | null {
   let official: string | null = null;
   const fallbacks: string[] = [];
@@ -493,6 +510,12 @@ function parseSongFromNode(node: any, fallbackArtist: string): YTMusicTrack | nu
 }
 
 function parseSongsFromBrowse(root: any, artistName: string): YTMusicTrack[] {
+  const topSongsShelf = findTopSongsShelf(root);
+  if (topSongsShelf) {
+    const parsed = parseTopSongsFromShelf(topSongsShelf, artistName);
+    if (parsed.length) return parsed;
+  }
+
   const tracks: YTMusicTrack[] = [];
 
   walkAll(root, (node) => {

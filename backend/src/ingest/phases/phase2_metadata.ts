@@ -89,8 +89,9 @@ function mapPlaylists(raw: RawPlaylist[]): PlaylistInput[] {
 function mapTopSongs(raw: RawTopSong[]): TrackInput[] {
   return dedupeByExternalId(
     (raw || []).map((song) => {
+      const externalId = (song as any)?.videoId || (song as any)?.id;
       return {
-        externalId: (song as any)?.id,
+        externalId,
         title: (song as any)?.title,
         durationSec: toSeconds((song as any)?.duration || null),
         imageUrl: extractBestImageUrl(song),
