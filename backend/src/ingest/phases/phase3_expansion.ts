@@ -51,6 +51,24 @@ type BuiltTrack = {
   videoId: string;
 };
 
+async function ingestTopSongs(artistId: string, artistKey: string, topSongs: TrackInput[]): Promise<number> {
+  const valid = (topSongs || []).filter((t) => normalize(t.externalId));
+  if (!valid.length) return 0;
+
+  const { map } = await upsertTracks(valid);
+  const entries = Object.entries(map || {});
+
+  await Promise.all(
+    entries.map(async ([externalId, trackId]) => {
+      if (!trackId) return;
+      const idx = valid.findIndex((t) => normalize(t.externalId) === normalize(externalId));
+      await linkArtistTrack(artistId, trackId, "primary", artistKey, idx >= 0 ? idx : 0);
+    })
+  );
+
+  return entries.length;
+}
+
 function shouldSkipRadioMix(externalIdRaw: string): boolean {
   const upper = normalize(externalIdRaw).toUpperCase();
   return upper.includes("RDCLAK") || upper.startsWith("RD");
@@ -197,7 +215,8 @@ async function linkArtistTrack(
   artistId: string | null,
   trackId: string,
   role: "primary" | "featured",
-  artistKey: string
+  artistKey: string,
+  position?: number
 ) {
   if (!artistKey || !trackId) return;
 
@@ -205,13 +224,13 @@ async function linkArtistTrack(
     artist_key: artistKey,
     track_id: trackId,
     role,
-    created_at: nowIso(),
+    position: Number.isFinite(position) ? Number(position) : 0,
     artist_id: artistId ?? null,
   };
 
   const { data, error } = await supabase
     .from("artist_tracks")
-    .upsert(row, { onConflict: "artist_key,track_id", ignoreDuplicates: true })
+    .upsert(row, { onConflict: "artist_key,track_id" })
     .select("artist_key");
 
   if (error) throw new Error(`[phase3][artist_tracks] ${error.message}`);
@@ -333,6 +352,8 @@ async function ingestOne(
 export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Output> {
   const limiter = pLimit(CONCURRENCY);
 
+  const topSongCount = await ingestTopSongs(params.artistId, params.artistKey, params.topSongs || []);
+
   const albumTasks = params.albums.map((a) =>
     limiter(() => ingestOne(params.artistId, params.artistKey, a, params.albumIdMap, "album"))
   );
@@ -344,7 +365,7 @@ export async function runPhase3Expansion(params: Phase3Input): Promise<Phase3Out
   await Promise.all([...albumTasks, ...playlistTasks]);
 
   return {
-    trackCount: 0,
+    trackCount: topSongCount,
     albumsProcessed: params.albums.length,
     playlistsProcessed: params.playlists.length,
   };
