@@ -348,6 +348,8 @@ async function recordChannelRawBrowse(browseId: string, raw: unknown): Promise<v
       .insert({ source: 'channel', status: 'raw', payload: { browseId, raw } });
     if (error) {
       console.warn('[innertube][channel][raw_insert_failed]', { browseId, message: error.message });
+    } else {
+      console.info('[innertube][channel][raw_insert_ok]', { browseId });
     }
   } catch (err: any) {
     console.warn('[innertube][channel][raw_capture_failed]', { browseId, message: err?.message || 'unknown_error' });
@@ -421,8 +423,20 @@ function pickArtists(node: any, fallbackArtist: string): string[] {
 }
 
 function parseSongFromNode(node: any, fallbackArtist: string): YTMusicTrack | null {
-  const watch = node?.navigationEndpoint?.watchEndpoint || node?.watchEndpoint || node?.playlistPanelVideoRenderer;
-  const videoId = normalize(node?.videoId || watch?.videoId || node?.playlistPanelVideoRenderer?.videoId);
+  const playNav =
+    node?.playNavigationEndpoint ||
+    node?.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint ||
+    node?.menu?.navigationItemRenderer?.navigationEndpoint;
+
+  const watch =
+    node?.navigationEndpoint?.watchEndpoint ||
+    node?.watchEndpoint ||
+    playNav?.watchEndpoint ||
+    node?.playlistPanelVideoRenderer;
+
+  const videoId = normalize(
+    node?.videoId || watch?.videoId || node?.playlistPanelVideoRenderer?.videoId || playNav?.watchEndpoint?.videoId,
+  );
   if (!videoId) return null;
 
   const title =
