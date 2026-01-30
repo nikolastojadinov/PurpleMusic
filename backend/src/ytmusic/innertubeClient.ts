@@ -333,6 +333,14 @@ function hasPlaylistShelfContents(raw: any): boolean {
 
 async function recordChannelRawBrowse(browseId: string, raw: unknown): Promise<void> {
   if (!browseId || !raw) return;
+
+  const url = (process.env.SUPABASE_URL || '').trim();
+  const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!url || !key) {
+    console.warn('[innertube][channel][raw_skip_missing_supabase]', { browseId, hasUrl: Boolean(url), hasKey: Boolean(key) });
+    return;
+  }
+
   try {
     const client = getSupabaseAdmin();
     const { error } = await client
