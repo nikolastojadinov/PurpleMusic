@@ -5,6 +5,7 @@ import { runPhase1Core } from './phases/phase1_core';
 import { runPhase2Metadata } from './phases/phase2_metadata';
 import { runPhase3Expansion } from './phases/phase3_expansion';
 import { nowIso } from './utils';
+import supabase from '../lib/supabase';
 
 export type IngestOneArtistParams = {
   browseId?: string;
@@ -21,6 +22,27 @@ export type IngestOneArtistResult = {
   errors: string[];
 };
 
+async function recordIngestRequest(params: IngestOneArtistParams): Promise<void> {
+  try {
+    const { data, error } = await supabase
+      .from('ingest_requests')
+      .insert({ source: 'artist', payload: params, status: 'received' })
+      .select('id')
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[ingest][artist] failed to persist ingest request', { message: error.message });
+      return;
+    }
+
+    if (data?.id) {
+      console.info('[ingest][artist] stored ingest request', { id: data.id });
+    }
+  } catch (err: any) {
+    console.warn('[ingest][artist] unexpected error while persisting ingest request', { message: err?.message });
+  }
+}
+
 function requireUcBrowseId(browseId: string): string {
   if (/^UC[A-Za-z0-9_-]+$/.test(browseId)) return browseId;
   throw new Error(`[ingest][artist] invalid browseId ${browseId}`);
@@ -31,6 +53,8 @@ export async function ingestOneArtist(params: IngestOneArtistParams): Promise<In
   const errors: string[] = [];
 
   console.info('[ingest][artist] start', { browse_id: params.browseId, artist_name: params.artistName, at: nowIso() });
+
+  await recordIngestRequest(params);
 
   const phase1 = await runPhase1Core({
     browseId: params.browseId,
