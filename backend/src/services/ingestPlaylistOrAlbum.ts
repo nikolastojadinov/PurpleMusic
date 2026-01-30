@@ -26,7 +26,6 @@ export type PlaylistOrAlbumIngest = {
 
 export type PlaylistOrAlbumOptions = {
   primaryArtistKeys?: string[];
-  allowArtistWrite?: boolean;
   mode?: PlaylistIngestMode;
 };
 
@@ -662,8 +661,8 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
   const tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
   if (!tracks.length) return EMPTY_RESULT;
 
-  // Default to writing artists for both playlists and albums unless explicitly disabled.
-  const allowArtistWrite = opts?.allowArtistWrite !== false;
+  // Always write artists and artist links for both playlists and albums.
+  const allowArtistWrite = true;
   const providedPrimaryKeys = uniqueKeys(opts?.primaryArtistKeys ?? []);
 
   const explicitTrackCount = normalizeTrackCount(payload.trackCount);
