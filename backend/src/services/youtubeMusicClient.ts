@@ -2,7 +2,7 @@ import { CONSENT_COOKIES, fetchInnertubeConfig, type InnertubeConfig } from "./y
 import { parseArtistBrowseFromInnertube, type ArtistBrowse } from "./ytmArtistParser";
 import { recordInnertubePayload } from "./innertubeRawStore";
 import { getSupabaseAdmin } from "./supabaseClient";
-import { fetchPlaylistBrowseRaw } from "./ytmusic/innertubeClient";
+import { fetchPlaylistBrowseRaw } from "../ytmusic/innertubeClient";
 
 export type { ArtistBrowse } from "./ytmArtistParser";
 
