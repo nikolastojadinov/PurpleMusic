@@ -8,6 +8,7 @@ import { browsePlaylistById as fetchRawPlaylistBrowse } from '../ytmusic/innertu
 
 const VIDEO_ID_REGEX = /^[A-Za-z0-9_-]{11}$/;
 const NOW = () => new Date().toISOString();
+const INGEST_DEBUG = process.env.YTM_PLAYLIST_DEBUG === '1' || process.env.YTM_DEBUG === '1';
 
 export type PlaylistIngestKind = 'playlist' | 'album';
 export type PlaylistIngestMode = 'single-playlist' | 'default';
@@ -440,7 +441,7 @@ async function upsertPlaylists(inputs: PlaylistInput[]): Promise<{ map: IdMap; c
 
 async function upsertTracks(
   inputs: TrackInput[],
-  albumMap: IdMap,
+  albumMap: IdMap = {},
 ): Promise<{ idMap: IdMap; artistTrackPairs: ArtistTrackLink[]; count: number }> {
   if (!inputs.length) return { idMap: {}, artistTrackPairs: [], count: 0 };
   const client = getSupabaseAdmin();
@@ -537,6 +538,24 @@ async function linkArtistAlbums(albumIds: string[], artistKeys: string[]): Promi
     return rows.length;
   } catch (err: any) {
     console.error('[linkArtistAlbums] failed', { message: err?.message || String(err) });
+    return 0;
+  }
+}
+
+async function attachAlbumToTracks(albumId: string, youtubeIds: string[]): Promise<number> {
+  if (!albumId || !youtubeIds.length) return 0;
+  const client = getSupabaseAdmin();
+  try {
+    const { error, data } = await client
+      .from('tracks')
+      .update({ album_id: albumId })
+      .in('youtube_id', youtubeIds)
+      .is('album_id', null)
+      .select('id');
+    if (error) throw error;
+    return Array.isArray(data) ? data.length : 0;
+  } catch (err: any) {
+    console.error('[attachAlbumToTracks] failed', { message: err?.message || String(err) });
     return 0;
   }
 }
@@ -695,6 +714,8 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
 
   const artistInputs = uniqueArtistInputs(collectedArtistInputs);
 
+  const trackResult = await upsertTracks(trackInputs);
+
   let artistResult: ArtistResult = { keys: [], count: 0 };
   if (allowArtistWrite && artistInputs.length) {
     try {
@@ -755,8 +776,6 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
       ])
     : { map: {}, count: 0 };
 
-  const trackResult = await upsertTracks(trackInputs, albumResult.map);
-
   const albumTrackIds = payload.kind === 'album' ? orderedTrackIds(tracks, trackResult.idMap) : [];
   const playlistTrackIds = payload.kind === 'playlist' ? orderedTrackIds(tracks, trackResult.idMap) : [];
 
@@ -764,9 +783,14 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
   let artistAlbumCount = 0;
   let playlistTrackCount = 0;
 
-  if (payload.kind === 'album' && albumTrackIds.length) {
+  if (payload.kind === 'album') {
     const albumId = albumResult.map[browseKey];
-    if (albumId) {
+    if (albumId && albumTrackIds.length) {
+      const updatedAlbumRefs = await attachAlbumToTracks(albumId, tracks.map((t) => normalize(t.videoId)).filter(Boolean));
+      if (INGEST_DEBUG && updatedAlbumRefs) {
+        console.info('[album-ingest] track_album_backfill', { browseId: browseKey, updated: updatedAlbumRefs });
+      }
+
       albumTrackCount = await linkAlbumTracks(albumId, albumTrackIds);
       if (fallbackKeys.length) {
         artistAlbumCount = await linkArtistAlbums([albumId], fallbackKeys);
@@ -808,6 +832,16 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
       artist_tracks: artistTrackCount,
     });
   }
+
+  console.info('[ingest][summary]', {
+    browseId: browseKey,
+    kind: payload.kind,
+    tracks: trackResult.count,
+    albumTrackCount,
+    playlistTrackCount,
+    artistTrackCount,
+    artistAlbumCount,
+  });
 
   return {
     trackCount: trackResult.count,

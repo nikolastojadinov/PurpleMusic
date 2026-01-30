@@ -44,6 +44,9 @@ export type PlaylistBrowse = {
 };
 
 type PlaylistBrowseOptions = { logRaw?: boolean };
+type BrowseWithContinuationOptions = PlaylistBrowseOptions & { referer?: string; maxContinuations?: number };
+
+const BROWSE_DEBUG = process.env.YTM_PLAYLIST_DEBUG === '1' || process.env.YTM_DEBUG === '1';
 
 const CONSENT_COOKIES =
   'CONSENT=YES+1; SOCS=CAESHAgBEhIaZ29vZ2xlLmNvbS9jb25zZW50L2Jhc2ljLzIiDFNvaURtdXhSNVQ1ag==; PREF=f1=50000000&hl=en';
@@ -186,6 +189,20 @@ function ensureShelfWithItems(raw: any, items: any[]): any {
   }
   shelfEntry.musicPlaylistShelfRenderer.contents = items;
   return raw;
+}
+
+function extractPlaylistContinuationItems(raw: any): { items: any[]; token: string | null } {
+  const items: any[] = [];
+
+  const primary = extractPlaylistShelfItems(raw);
+  if (Array.isArray(primary)) items.push(...primary);
+
+  const continuationItems = raw?.continuationContents?.musicPlaylistShelfContinuation?.contents;
+  if (Array.isArray(continuationItems)) items.push(...continuationItems);
+
+  const token = findContinuationToken(raw);
+
+  return { items, token };
 }
 
 async function loadInnertubeConfig(): Promise<InnertubeConfig> {
@@ -613,43 +630,54 @@ export async function fetchAlbumBrowse(browseIdRaw: string): Promise<AlbumBrowse
   };
 }
 
-export async function fetchPlaylistBrowseRaw(browseIdRaw: string, opts?: PlaylistBrowseOptions): Promise<any | null> {
+export async function fetchBrowseWithContinuations(browseIdRaw: string, opts?: BrowseWithContinuationOptions): Promise<any | null> {
   const browseId = normalize(browseIdRaw);
   if (!browseId) return null;
-  const config = await getInnertubeConfig();
 
-  const first = await callYoutubei<any>(
-    'browse',
-    { context: buildContext(config), browseId },
-    `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`
-  );
+  const config = await getInnertubeConfig();
+  const context = buildContext(config);
+  const referer = opts?.referer || `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`;
+  const maxContinuations = typeof opts?.maxContinuations === 'number' ? Math.min(Math.max(opts.maxContinuations, 0), 50) : 15;
+
+  const first = await callYoutubei<any>('browse', { context, browseId }, referer);
   if (!first) return null;
 
-  let items = extractPlaylistShelfItems(first);
-  let current = first;
-  let attempts = 0;
-  while (items.length === 0 && attempts < 5) {
-    const token = findContinuationToken(current);
-    if (!token) break;
-    const cont = await callYoutubei<any>(
-      'browse',
-      { context: buildContext(config), continuation: token },
-      `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`
-    );
+  const mergedItems: any[] = [];
+  let token: string | null = null;
+  let pages = 1;
+
+  const collect = (raw: any) => {
+    const { items, token: nextToken } = extractPlaylistContinuationItems(raw);
+    if (Array.isArray(items)) mergedItems.push(...items);
+    token = nextToken;
+  };
+
+  collect(first);
+
+  while (token && pages < maxContinuations) {
+    const cont = await callYoutubei<any>('browse', { context, continuation: token }, referer);
     if (!cont) break;
-    current = cont;
-    const more = extractPlaylistShelfItems(cont);
-    if (more.length) items = items.concat(more);
-    attempts += 1;
+    pages += 1;
+    collect(cont);
   }
 
-  let raw = first;
-  if (items.length) {
-    raw = ensureShelfWithItems(first, items);
-    if (opts?.logRaw) void recordPlaylistRawBrowse(browseId, raw);
+  const raw = mergedItems.length ? ensureShelfWithItems(first, mergedItems) : first;
+
+  if (opts?.logRaw) void recordPlaylistRawBrowse(browseId, raw);
+  if (BROWSE_DEBUG) {
+    console.info('[innertube][browse_with_continuations]', {
+      browseId,
+      pages,
+      itemCount: mergedItems.length,
+      hasShelf: hasPlaylistShelfContents(raw),
+    });
   }
 
   return raw;
+}
+
+export async function fetchPlaylistBrowseRaw(browseIdRaw: string, opts?: PlaylistBrowseOptions): Promise<any | null> {
+  return fetchBrowseWithContinuations(browseIdRaw, opts);
 }
 
 export async function fetchPlaylistBrowse(browseIdRaw: string, opts?: PlaylistBrowseOptions): Promise<PlaylistBrowse | null> {

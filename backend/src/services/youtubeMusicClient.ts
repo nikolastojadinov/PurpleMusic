@@ -2,7 +2,7 @@ import { CONSENT_COOKIES, fetchInnertubeConfig, type InnertubeConfig } from "./y
 import { parseArtistBrowseFromInnertube, type ArtistBrowse } from "./ytmArtistParser";
 import { recordInnertubePayload } from "./innertubeRawStore";
 import { getSupabaseAdmin } from "./supabaseClient";
-import { fetchPlaylistBrowseRaw } from "../ytmusic/innertubeClient";
+import { fetchBrowseWithContinuations } from "../ytmusic/innertubeClient";
 
 export type { ArtistBrowse } from "./ytmArtistParser";
 
@@ -993,45 +993,108 @@ function extractArtistNamesFromRuns(
     );
 }
 
-function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistBrowse["tracks"] {
-  const items =
-    browseJson?.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer?.contents?.flatMap(
-      (c: any) => c?.musicPlaylistShelfRenderer?.contents ?? []
-    ) ?? [];
+function collectTrackRenderersFromSections(sectionContents: any[]): any[] {
+  const renderers: any[] = [];
+  sectionContents.forEach((content: any) => {
+    if (content?.musicResponsiveListItemRenderer) renderers.push(content.musicResponsiveListItemRenderer);
 
+    const playlistShelf = content?.musicPlaylistShelfRenderer?.contents;
+    if (Array.isArray(playlistShelf)) {
+      playlistShelf.forEach((item: any) => {
+        const renderer = item?.musicResponsiveListItemRenderer;
+        if (renderer) renderers.push(renderer);
+      });
+    }
+
+    const musicShelf = content?.musicShelfRenderer?.contents;
+    if (Array.isArray(musicShelf)) {
+      musicShelf.forEach((item: any) => {
+        const renderer = item?.musicResponsiveListItemRenderer;
+        if (renderer) renderers.push(renderer);
+      });
+    }
+  });
+  return renderers;
+}
+
+function collectPlaylistTrackRenderers(browseJson: any): any[] {
+  const secondary =
+    browseJson?.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer?.contents ?? [];
+
+  const renderers = collectTrackRenderersFromSections(secondary);
+
+  const continuationContents = browseJson?.continuationContents?.musicPlaylistShelfContinuation?.contents ?? [];
+  continuationContents.forEach((item: any) => {
+    const renderer = item?.musicResponsiveListItemRenderer;
+    if (renderer) renderers.push(renderer);
+  });
+
+  return renderers;
+}
+
+function collectAlbumTrackRenderers(browseJson: any): any[] {
+  const tabs = browseJson?.contents?.twoColumnBrowseResultsRenderer?.tabs ?? [];
+  const primaryTabSections = tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents ?? [];
+  const secondarySections = browseJson?.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer?.contents ?? [];
+
+  const renderers = [...collectTrackRenderersFromSections(primaryTabSections), ...collectTrackRenderersFromSections(secondarySections)];
+
+  const continuationShelf = browseJson?.continuationContents?.musicShelfContinuation?.contents ?? [];
+  continuationShelf.forEach((item: any) => {
+    const renderer = item?.musicResponsiveListItemRenderer;
+    if (renderer) renderers.push(renderer);
+  });
+
+  return renderers;
+}
+
+function parseTrackRenderer(renderer: any): PlaylistBrowse["tracks"][number] | null {
+  const videoId = extractVideoIdFromResponsive(renderer);
+  if (!looksLikeVideoId(videoId)) return null;
+
+  const title = pickRunsText(renderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs);
+  if (!title) return null;
+
+  const artistRuns = renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [];
+  const artistNames = extractArtistNamesFromRuns(artistRuns);
+  if (!artistNames.length) return null;
+
+  const duration =
+    pickRunsText(renderer?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text?.runs) || null;
+
+  const thumbnail =
+    pickThumbnail(renderer?.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
+    pickThumbnail(renderer?.thumbnail?.croppedSquareThumbnailRenderer?.thumbnail?.thumbnails) ||
+    null;
+
+  return {
+    videoId,
+    title,
+    artist: artistNames[0] || "",
+    artists: artistNames.map((name) => ({ name, channelId: null })),
+    duration,
+    thumbnail,
+    shortBylineText: renderer?.shortBylineText,
+  };
+}
+
+function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistBrowse["tracks"] {
+  const renderers = collectPlaylistTrackRenderers(browseJson);
   const tracks: PlaylistBrowse["tracks"] = [];
   const seen = new Set<string>();
 
-  items.forEach((item: any, idx: number) => {
-    const renderer = item?.musicResponsiveListItemRenderer;
-    if (!renderer) return;
-
-    const videoId = extractVideoIdFromResponsive(renderer);
-    if (!looksLikeVideoId(videoId)) return;
-    if (seen.has(videoId)) return;
-
-    const title = pickRunsText(renderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs);
-    if (!title) return;
-
-    const artistRuns = renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [];
-    const artistNames = extractArtistNamesFromRuns(artistRuns);
-
-    seen.add(videoId);
-    tracks.push({
-      videoId,
-      title,
-      artist: artistNames[0] || "",
-      artists: artistNames.map((name) => ({ name, channelId: null })),
-      duration: null,
-      thumbnail: null,
-      shortBylineText: renderer?.shortBylineText,
-    });
+  renderers.forEach((renderer: any, index: number) => {
+    const parsed = parseTrackRenderer(renderer);
+    if (!parsed) return;
+    if (seen.has(parsed.videoId)) return;
+    seen.add(parsed.videoId);
+    tracks.push(parsed);
   });
 
   if (BROWSE_DEBUG) {
     console.info("[browse/playlist][debug] extraction_summary", {
       browseId,
-      itemCount: items.length,
+      itemCount: renderers.length,
       trackCount: tracks.length,
     });
   }
@@ -1040,8 +1103,32 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     browseId,
     title: pickText(browseJson?.header?.musicDetailHeaderRenderer?.title) || browseId,
     count: tracks.length,
-    sources: ["twoColumn.secondaryContents.sectionList.musicPlaylistShelfRenderer.contents"],
+    sources: ["musicResponsiveListItemRenderer"],
   });
+
+  return tracks;
+}
+
+function parseAlbumBrowseTracks(browseJson: any, browseId: string): PlaylistBrowse["tracks"] {
+  const renderers = collectAlbumTrackRenderers(browseJson);
+  const tracks: PlaylistBrowse["tracks"] = [];
+  const seen = new Set<string>();
+
+  renderers.forEach((renderer: any) => {
+    const parsed = parseTrackRenderer(renderer);
+    if (!parsed) return;
+    if (seen.has(parsed.videoId)) return;
+    seen.add(parsed.videoId);
+    tracks.push(parsed);
+  });
+
+  if (BROWSE_DEBUG) {
+    console.info("[browse/album][debug] extraction_summary", {
+      browseId,
+      itemCount: renderers.length,
+      trackCount: tracks.length,
+    });
+  }
 
   return tracks;
 }
@@ -1053,22 +1140,9 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
   const upper = playlistId.toUpperCase();
   const browseId = upper.startsWith("VL") || upper.startsWith("MPRE") || upper.startsWith("OLAK") ? playlistId : `VL${playlistId}`;
 
-  const browseJson = await fetchPlaylistBrowseRaw(browseId, { logRaw: true });
+  const browseJson = await fetchBrowseWithContinuations(browseId, { logRaw: true });
 
   if (!browseJson) return null;
-
-  try {
-    console.error("[DEBUG][RAW_BROWSE_JSON]", JSON.stringify(browseJson, null, 2).slice(0, 20000));
-    console.log("[debug][browsePlaylistById] keys:", Object.keys(browseJson || {}));
-    console.log("[debug] hasResponsiveTracks:", JSON.stringify(browseJson || {}).includes("musicResponsiveListItemRenderer"));
-  } catch {
-    // ignore logging issues
-  }
-
-  if (DEBUG) {
-    console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(browseJson || {}));
-    console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(browseJson?.contents ?? null, null, 2));
-  }
 
   const header = browseJson?.header?.musicDetailHeaderRenderer;
   const title = pickText(header?.title) || playlistId;
