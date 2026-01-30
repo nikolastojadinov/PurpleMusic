@@ -390,7 +390,7 @@ function findTopSongsShelf(raw: any): any | null {
     const renderer = entry?.musicShelfRenderer;
     const title = pickText(renderer?.title)?.toLowerCase?.() || '';
     if (renderer && title.includes('top song')) {
-      return { title: renderer.title ?? null, contents: Array.isArray(renderer.contents) ? renderer.contents.slice(0, 25) : null };
+      return { title: renderer.title ?? null, contents: Array.isArray(renderer.contents) ? renderer.contents : null };
     }
   }
 
@@ -403,7 +403,7 @@ function findTopSongsShelf(raw: any): any | null {
     if (looksTop) {
       shelf = {
         title: renderer.title ?? null,
-        contents: Array.isArray(renderer.contents) ? renderer.contents.slice(0, 25) : null,
+        contents: Array.isArray(renderer.contents) ? renderer.contents : null,
       };
     }
   });
@@ -662,7 +662,7 @@ export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrow
   const name = normalize(pickText(header?.title)) || browseId;
   const channelId = normalize(header?.subscriptionButton?.subscribeButtonRenderer?.channelId) || browseId;
   const thumbnails = collectThumbnails(header?.thumbnail?.musicThumbnailRenderer, header?.thumbnail);
-  const topSongs = parseSongsFromBrowse(json, name).slice(0, 10);
+  const topSongs = parseSongsFromBrowse(json, name);
   const { albums, playlists } = parseAlbumsAndPlaylists(json);
   const description = pickDescription(json);
 

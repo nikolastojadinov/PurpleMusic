@@ -384,7 +384,7 @@ export function parseArtistBrowseFromInnertube(browseJson: any, browseIdRaw: str
     }
   });
 
-  const topSongs = dedupeByKey(songCandidates, (item) => item.id).slice(0, 10);
+  const topSongs = dedupeByKey(songCandidates, (item) => item.id);
   const albums = dedupeByKey(albumCandidates, (item) => item.id);
   const playlists = dedupeByKey(playlistCandidates, (item) => item.id);
   const description = extractArtistDescription(browseJson);

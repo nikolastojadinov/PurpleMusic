@@ -919,12 +919,9 @@ export async function browseArtistById(browseIdRaw: string): Promise<ArtistBrows
   const browseId = normalizeString(browseIdRaw);
   if (!browseId) return null;
 
-  const config = await fetchInnertubeConfig();
-  if (!config) return null;
-
-  const browseJson = await callYoutubei<any>(config, "browse", {
-    context: buildSearchBody(config, "").context,
-    browseId,
+  const browseJson = await fetchBrowseWithContinuations(browseId, {
+    logRaw: true,
+    maxContinuations: 5,
   });
   if (!browseJson) return null;
 
