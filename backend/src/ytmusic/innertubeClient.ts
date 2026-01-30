@@ -343,15 +343,8 @@ async function recordChannelRawBrowse(browseId: string, raw: unknown): Promise<v
 
   try {
     const client = getSupabaseAdmin();
-    const topSongsShelf = findTopSongsShelf(raw);
-    const payload = {
-      browseId,
-      header: raw?.header ?? null,
-      topSongsShelf,
-    };
-    const { error } = await client
-      .from('ingest_requests')
-      .insert({ source: 'artist', status: 'raw', payload });
+    const payload: any = { browseId, raw: raw as any };
+    const { error } = await client.from('ingest_requests').insert({ source: 'artist', status: 'raw', payload });
     if (error) {
       console.warn('[innertube][channel][raw_insert_failed]', { browseId, message: error.message });
     } else {
