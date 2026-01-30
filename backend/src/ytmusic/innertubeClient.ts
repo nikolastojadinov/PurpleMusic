@@ -331,18 +331,24 @@ function hasPlaylistShelfContents(raw: any): boolean {
   return false;
 }
 
-async function recordPlaylistRawBrowse(browseId: string, raw: unknown): Promise<void> {
+async function recordChannelRawBrowse(browseId: string, raw: unknown): Promise<void> {
   if (!browseId || !raw) return;
-  if (!hasPlaylistShelfContents(raw)) return;
   try {
     const client = getSupabaseAdmin();
-    const { error } = await client.from('ingest_requests').insert({ source: 'playlist', status: 'raw', payload: { browseId, raw } });
+    const { error } = await client
+      .from('ingest_requests')
+      .insert({ source: 'channel', status: 'raw', payload: { browseId, raw } });
     if (error) {
-      console.warn('[innertube][playlist][raw_insert_failed]', { browseId, message: error.message });
+      console.warn('[innertube][channel][raw_insert_failed]', { browseId, message: error.message });
     }
   } catch (err: any) {
-    console.warn('[innertube][playlist][raw_capture_failed]', { browseId, message: err?.message || 'unknown_error' });
+    console.warn('[innertube][channel][raw_capture_failed]', { browseId, message: err?.message || 'unknown_error' });
   }
+}
+
+// Playlist raw capture is disabled (kept to preserve API surface for callers).
+async function recordPlaylistRawBrowse(_browseId: string, _raw: unknown): Promise<void> {
+  return;
 }
 
 
@@ -573,6 +579,9 @@ export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrow
   const payload = { context: buildContext(config), browseId };
   const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/channel/${encodeURIComponent(browseId)}`);
   if (!json) return null;
+
+  // Capture raw channel payload for debugging ingest (phase 1).
+  void recordChannelRawBrowse(browseId, json);
 
   const header = json?.header?.musicImmersiveHeaderRenderer || json?.header?.musicHeaderRenderer;
   const name = normalize(pickText(header?.title)) || browseId;

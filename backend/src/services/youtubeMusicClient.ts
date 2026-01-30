@@ -282,42 +282,8 @@ async function callYoutubei<T = any>(config: InnertubeConfig, path: string, payl
 }
 
 async function recordPlaylistRawBrowse(browseId: string, raw: any): Promise<void> {
-  const hasPlaylistContents = (payload: any): boolean => {
-    if (!payload || typeof payload !== "object") return false;
-    const stack: any[] = [payload];
-    const seen = new WeakSet<object>();
-    while (stack.length) {
-      const node = stack.pop();
-      if (!node || typeof node !== "object") continue;
-      if (seen.has(node as object)) continue;
-      seen.add(node as object);
-
-      const shelf = (node as any).musicPlaylistShelfRenderer;
-      if (shelf && Array.isArray(shelf.contents) && shelf.contents.length) return true;
-
-      for (const value of Object.values(node)) stack.push(value);
-    }
-    return false;
-  };
-
-  if (!hasPlaylistContents(raw)) {
-    return;
-  }
-
-  try {
-    const supabase = getSupabaseAdmin();
-    const { error } = await supabase.from("ingest_requests").insert({
-      source: "playlist",
-      status: "raw",
-      payload: { browseId, raw },
-    });
-
-    if (error) {
-      console.error("[playlist-raw][insert_failed]", { browseId, message: error.message });
-    }
-  } catch (err: any) {
-    console.error("[playlist-raw][unexpected_error]", { browseId, message: err?.message ?? String(err) });
-  }
+  // playlist raw capture disabled
+  return;
 }
 
 function extractNavigation(renderer: any): { browseId: string; pageType: string; videoId: string } {
