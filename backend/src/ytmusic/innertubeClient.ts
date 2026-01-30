@@ -1,5 +1,4 @@
 import { normalize, toSeconds } from '../ingest/utils';
-import supabase from '../lib/supabase';
 
 export type YTThumbnail = { url: string; width?: number; height?: number };
 
@@ -246,23 +245,6 @@ async function callYoutubei<T>(path: string, payload: Record<string, any>, refer
   }
 }
 
-async function recordPlaylistRawPayload(browseId: string, raw: any): Promise<void> {
-  try {
-    const { data, error } = await supabase
-      .from('ingest_requests')
-      .insert({ source: 'playlist', payload: { browseId, raw }, status: 'raw' })
-      .select('id')
-      .maybeSingle();
-
-    if (error) {
-      console.warn('[innertube][playlist_raw] persist_failed', { browseId, message: error.message });
-    } else if (data?.id) {
-      console.info('[innertube][playlist_raw] stored', { id: data.id, browseId });
-    }
-  } catch (err: any) {
-    console.warn('[innertube][playlist_raw] unexpected_error', { browseId, message: err?.message });
-  }
-}
 
 
 function walkAll(root: any, visit: (node: any) => void): void {
@@ -555,8 +537,6 @@ export async function fetchPlaylistBrowse(browseIdRaw: string): Promise<Playlist
   const payload = { context: buildContext(config), browseId };
   const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`);
   if (!json) return null;
-
-  void recordPlaylistRawPayload(browseId, json);
 
   const header = json?.header?.musicDetailHeaderRenderer || json?.header?.musicTwoRowHeaderRenderer;
   const title = normalize(pickText(header?.title)) || browseId;

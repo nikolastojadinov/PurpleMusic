@@ -1,6 +1,7 @@
 import { CONSENT_COOKIES, fetchInnertubeConfig, type InnertubeConfig } from "./youtubeInnertubeConfig";
 import { parseArtistBrowseFromInnertube, type ArtistBrowse } from "./ytmArtistParser";
 import { recordInnertubePayload } from "./innertubeRawStore";
+import { getSupabaseAdmin } from "./supabaseClient";
 
 export type { ArtistBrowse } from "./ytmArtistParser";
 
@@ -277,6 +278,23 @@ async function callYoutubei<T = any>(config: InnertubeConfig, path: string, payl
 
   const json = (await response.json()) as T;
   return json;
+}
+
+async function recordPlaylistRawBrowse(browseId: string, raw: any): Promise<void> {
+  try {
+    const supabase = getSupabaseAdmin();
+    const { error } = await supabase.from("ingest_requests").insert({
+      source: "playlist",
+      status: "raw",
+      payload: { browseId, raw },
+    });
+
+    if (error) {
+      console.error("[playlist-raw][insert_failed]", { browseId, message: error.message });
+    }
+  } catch (err: any) {
+    console.error("[playlist-raw][unexpected_error]", { browseId, message: err?.message ?? String(err) });
+  }
 }
 
 function extractNavigation(renderer: any): { browseId: string; pageType: string; videoId: string } {
@@ -1230,6 +1248,8 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
     context: buildSearchBody(config, "").context,
     browseId,
   });
+
+  void recordPlaylistRawBrowse(browseId, browseJson);
 
   try {
     console.error("[DEBUG][RAW_BROWSE_JSON]", JSON.stringify(browseJson, null, 2).slice(0, 20000));
