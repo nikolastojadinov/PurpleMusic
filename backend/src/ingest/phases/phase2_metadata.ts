@@ -127,9 +127,6 @@ export async function runPhase2Metadata(params: {
 
   await ensureArtistDisplayName(params.artistId, params.artistBrowse.name || params.artistKey);
 
-  console.log('[debug][upsertAlbums] cover_url sample:', albums[0]?.coverUrl ?? null);
-  console.log('[debug][upsertPlaylists] cover_url sample:', playlists[0]?.coverUrl ?? null);
-
   const [{ map: albumIdMap }, { map: playlistIdMap }] = await Promise.all([
     upsertAlbums(albums, params.artistId),
     upsertPlaylists(playlists),
