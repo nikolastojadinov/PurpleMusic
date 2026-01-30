@@ -684,12 +684,7 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
     return {
       youtubeId: normalize(t.videoId),
       title: normalize(t.title) || 'Untitled',
-      artistNames: uniqueStrings([
-        ...trackArtists.map((artist) => artist.displayName || artist.name),
-        ...splitArtists(t.artist),
-        ...splitArtistsFromShortByline((t as any).shortBylineText),
-        ...splitFeaturedArtistsFromTitle(t.title),
-      ]),
+      artistNames: uniqueStrings(trackArtists.map((artist) => artist.displayName || artist.name)),
       durationSeconds: toSeconds(t.duration),
       thumbnailUrl: t.thumbnail ?? null,
       albumExternalId: payload.kind === 'album' ? browseKey : null,

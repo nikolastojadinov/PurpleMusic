@@ -975,285 +975,100 @@ export async function browseArtistById(browseIdRaw: string): Promise<ArtistBrows
   return result;
 }
 
-function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistBrowse["tracks"] {
-  const tracks: PlaylistBrowse["tracks"] = [];
-  const renderSources = new Set<string>();
-  const stats = {
-    responsiveSeen: 0,
-    responsiveParsed: 0,
-    playlistVideoSeen: 0,
-    playlistVideoParsed: 0,
-    panelSeen: 0,
-    panelParsed: 0,
-    playlistItemDataSeen: 0,
-    playlistItemDataParsed: 0,
-    shelvesVisited: 0,
-  };
+function extractArtistNamesFromRuns(runs: Array<{ text?: string }>): string[] {
+  if (!Array.isArray(runs)) return [];
 
-  const extractArtistItemsFromRuns = (runs: any): PlaylistBrowse["tracks"][number]["artists"] => {
-    if (!Array.isArray(runs)) return [];
+  const rawText = runs.map((r) => r?.text ?? "").join("").trim();
+  if (!rawText) return [];
 
-    const seen = new Set<string>();
-    const items: NonNullable<PlaylistBrowse["tracks"][number]["artists"]> = [];
+  const parts = rawText
+    .split(/,|&|•|·|\u2022|\u00b7|\s+and\s+/gi)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-    runs.forEach((r: any) => {
-      const raw = normalizeString(r?.text);
-      // Ignore separators like bullets or short punctuation tokens.
-      if (!raw || (raw.length <= 2 && !/[A-Za-z0-9]/.test(raw))) return;
+  const cleaned = parts.filter((p) => {
+    const lower = p.toLowerCase();
+    return lower !== "feat" && lower !== "featuring" && lower !== "ft";
+  });
 
-      const key = raw.toLowerCase();
-      if (seen.has(key)) return;
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const name of cleaned) {
+    const key = name.toLowerCase();
+    if (!seen.has(key)) {
       seen.add(key);
+      result.push(name);
+    }
+  }
 
-      // Do not store channelId to avoid filtering on UC browseId presence.
-      items.push({ name: raw, channelId: null });
-    });
+  return result;
+}
 
-    return items;
-  };
+function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistBrowse["tracks"] {
+  const items =
+    browseJson?.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer?.contents?.flatMap(
+      (c: any) => c?.musicPlaylistShelfRenderer?.contents ?? []
+    ) ?? [];
 
-    const selectArtistRuns = (renderer: any): any[] => {
-      // Innertube playlist browse: artists are in flexColumns[1].text.runs per track.
-      const runs = renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs;
-      return Array.isArray(runs) ? runs : [];
-    };
+  const tracks: PlaylistBrowse["tracks"] = [];
+  const seen = new Set<string>();
 
-  const logBrowseDebug = (label: string, payload?: Record<string, unknown>) => {
-    if (!BROWSE_DEBUG) return;
-    console.info(`[browse/playlist][debug] ${label}`, payload ?? {});
-  };
+  items.forEach((item: any, idx: number) => {
+    const renderer = item?.musicResponsiveListItemRenderer;
+    if (!renderer) return;
 
-  const pushTrack = (track: PlaylistBrowse["tracks"][number], source: string) => {
-    if (!track?.videoId || !looksLikeVideoId(track.videoId)) return;
-    tracks.push(track);
-    renderSources.add(source);
-  };
-
-    const buildTrackFromResponsive = (renderer: any): PlaylistBrowse["tracks"][number] | null => {
     const videoId = extractVideoIdFromResponsive(renderer);
-    if (!looksLikeVideoId(videoId)) return null;
-
-    const artistRuns = selectArtistRuns(renderer);
+    if (!looksLikeVideoId(videoId)) return;
+    if (seen.has(videoId)) return;
 
     const title =
       pickRunsText(renderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs) ||
       pickText(renderer?.title) ||
       pickText(renderer?.accessibilityLabel);
-    if (!title) return null;
+    if (!title) return;
 
-      const artist = pickRunsText(artistRuns);
+    const artistRuns =
+      renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [];
+    const artistNames = extractArtistNamesFromRuns(artistRuns);
+
     const duration =
       pickRunsText(renderer?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text?.runs) ||
-      pickText(renderer?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text) ||
       pickText(renderer?.lengthText) ||
       normalizeString(renderer?.lengthSeconds);
-    const thumb =
+
+    const thumbnail =
       pickThumbnail(renderer?.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
       pickThumbnail(renderer?.thumbnail?.thumbnails) ||
       null;
 
-    return {
+    seen.add(videoId);
+    tracks.push({
       videoId,
       title,
-      artist,
-      artists: extractArtistItemsFromRuns(artistRuns),
+      artist: artistNames[0] || "",
+      artists: artistNames.map((name) => ({ name, channelId: null })),
       duration: duration || null,
-      thumbnail: thumb,
+      thumbnail,
       shortBylineText: renderer?.shortBylineText,
-    };
-  };
-
-  function parseResponsive(renderer: any, source: string) {
-    stats.responsiveSeen += 1;
-    const track = buildTrackFromResponsive(renderer);
-    if (track) {
-      stats.responsiveParsed += 1;
-      pushTrack(track, source);
-    }
-  }
-
-  function parsePanel(panel: any, source: string) {
-    stats.panelSeen += 1;
-    const videoId = normalizeString(panel?.videoId);
-    if (!looksLikeVideoId(videoId)) return;
-    const trackTitle = pickText(panel?.title);
-    const artistRuns = Array.isArray(panel?.shortBylineText?.runs) ? panel.shortBylineText.runs : [];
-    const artist = pickRunsText(artistRuns) || pickText(panel?.shortBylineText) || pickText(panel?.longBylineText) || "";
-    const duration = pickText(panel?.lengthText) || normalizeString((panel?.lengthSeconds as any) ?? "");
-    const thumb = pickThumbnail(panel?.thumbnail?.thumbnails);
-    if (!trackTitle) return;
-    stats.panelParsed += 1;
-    pushTrack({
-      videoId,
-      title: trackTitle,
-      artist,
-      artists: extractArtistItemsFromRuns(artistRuns),
-      duration: duration || null,
-      thumbnail: thumb,
-      shortBylineText: panel?.shortBylineText,
-    }, source);
-  }
-
-  function parsePlaylistVideo(renderer: any, source: string) {
-    stats.playlistVideoSeen += 1;
-    const videoId = normalizeString(renderer?.videoId);
-    if (!looksLikeVideoId(videoId)) return;
-    const trackTitle = pickText(renderer?.title);
-    const artistRuns = Array.isArray(renderer?.shortBylineText?.runs) ? renderer.shortBylineText.runs : [];
-    const artist =
-      pickRunsText(artistRuns) ||
-      pickText(renderer?.shortBylineText) ||
-      pickText(renderer?.longBylineText) ||
-      "";
-    const duration = pickText(renderer?.lengthText) || normalizeString((renderer?.lengthSeconds as any) ?? "");
-    const thumb = pickThumbnail(renderer?.thumbnail?.thumbnails);
-    if (!trackTitle) return;
-    stats.playlistVideoParsed += 1;
-    pushTrack({
-      videoId,
-      title: trackTitle,
-      artist,
-      artists: extractArtistItemsFromRuns(artistRuns),
-      duration: duration || null,
-      thumbnail: thumb,
-      shortBylineText: renderer?.shortBylineText,
-    }, source);
-  }
-
-  function parsePlaylistItemData(item: any, source: string) {
-    stats.playlistItemDataSeen += 1;
-    const track = buildTrackFromResponsive(item);
-    if (track) {
-      stats.playlistItemDataParsed += 1;
-      pushTrack(track, source);
-    }
-  }
-
-  function parseContainerContents(contents: any, label: string) {
-    if (!Array.isArray(contents)) return;
-    contents.forEach((item: any, idx: number) => {
-      const baseLabel = `${label}[${idx}]`;
-      if (item?.playlistVideoRenderer)
-        parsePlaylistVideo(item.playlistVideoRenderer, `${baseLabel}.playlistVideoRenderer`);
-      if (item?.playlistPanelVideoRenderer)
-        parsePanel(item.playlistPanelVideoRenderer, `${baseLabel}.playlistPanelVideoRenderer`);
-      if (item?.musicResponsiveListItemRenderer)
-        parseResponsive(item.musicResponsiveListItemRenderer, `${baseLabel}.musicResponsiveListItemRenderer`);
-      if (item?.playlistItemData) parsePlaylistItemData(item, `${baseLabel}.playlistItemData`);
-
-      if (item?.musicPlaylistShelfRenderer) parseMusicShelf(item.musicPlaylistShelfRenderer, `${baseLabel}.musicPlaylistShelfRenderer`);
-      if (item?.musicShelfRenderer) parseMusicShelf(item.musicShelfRenderer, `${baseLabel}.musicShelfRenderer`);
-      if (item?.musicCarouselShelfRenderer) parseContainerContents(item.musicCarouselShelfRenderer?.contents, `${baseLabel}.musicCarouselShelfRenderer.contents`);
-      if (item?.itemSectionRenderer) parseContainerContents(item.itemSectionRenderer?.contents, `${baseLabel}.itemSectionRenderer.contents`);
     });
-  }
-
-  function parseMusicShelf(shelf: any, label: string) {
-    if (!shelf) return;
-    stats.shelvesVisited += 1;
-    parseContainerContents(shelf?.contents, `${label}.contents`);
-  }
-
-  function handleExplicitTwoColumn(root: any) {
-    const twoColumn = root?.contents?.twoColumnBrowseResultsRenderer;
-    if (!twoColumn) return;
-    const sectionContents = twoColumn?.secondaryContents?.sectionListRenderer?.contents;
-    if (!Array.isArray(sectionContents)) return;
-
-    sectionContents.forEach((section: any, sectionIndex: number) => {
-      const baseLabel = `twoColumn.secondary.sectionList[${sectionIndex}]`;
-      if (section?.musicShelfRenderer) parseMusicShelf(section.musicShelfRenderer, `${baseLabel}.musicShelfRenderer`);
-      if (section?.musicPlaylistShelfRenderer) parseMusicShelf(section.musicPlaylistShelfRenderer, `${baseLabel}.musicPlaylistShelfRenderer`);
-      if (section?.musicCarouselShelfRenderer) {
-        parseContainerContents(section.musicCarouselShelfRenderer.contents, `${baseLabel}.musicCarouselShelfRenderer.contents`);
-      }
-      if (section?.itemSectionRenderer?.contents) {
-        parseContainerContents(section.itemSectionRenderer.contents, `${baseLabel}.itemSectionRenderer.contents`);
-      }
-    });
-  }
-
-  function walk(node: any): void {
-    if (!node) return;
-    if (Array.isArray(node)) {
-      for (const item of node) walk(item);
-      return;
-    }
-    if (typeof node !== "object") return;
-
-    if ((node as any)?.twoColumnBrowseResultsRenderer) {
-      handleExplicitTwoColumn({ contents: node });
-    }
-
-    const itemSection = (node as any)?.itemSectionRenderer;
-    if (itemSection?.contents) {
-      parseContainerContents(itemSection.contents, "itemSectionRenderer.contents");
-    }
-
-    const carousel = (node as any)?.musicCarouselShelfRenderer;
-    if (carousel?.contents) {
-      parseContainerContents(carousel.contents, "musicCarouselShelfRenderer.contents");
-    }
-
-    const playlistShelf = (node as any)?.musicPlaylistShelfRenderer;
-    if (playlistShelf?.contents) {
-      parseMusicShelf(playlistShelf, "musicPlaylistShelfRenderer");
-    }
-
-    const musicShelf = (node as any)?.musicShelfRenderer;
-    if (musicShelf?.contents) {
-      parseMusicShelf(musicShelf, "musicShelfRenderer");
-    }
-
-    const panel = (node as any)?.playlistPanelVideoRenderer;
-    if (panel) parsePanel(panel, "playlistPanelVideoRenderer");
-
-    const playlistVideo = (node as any)?.playlistVideoRenderer;
-    if (playlistVideo) parsePlaylistVideo(playlistVideo, "playlistVideoRenderer");
-
-    const responsive = (node as any)?.musicResponsiveListItemRenderer;
-    if (responsive) parseResponsive(responsive, "musicResponsiveListItemRenderer");
-
-    const playlistItemData = (node as any)?.playlistItemData;
-    if (playlistItemData) parsePlaylistItemData(node, "playlistItemData");
-
-    for (const value of Object.values(node)) walk(value);
-  }
-
-  handleExplicitTwoColumn(browseJson);
-  walk(browseJson);
-
-  const deduped: PlaylistBrowse["tracks"] = [];
-  const seen = new Set<string>();
-  for (const t of tracks) {
-    if (seen.has(t.videoId)) continue;
-    seen.add(t.videoId);
-    deduped.push(t);
-  }
-
-  logBrowseDebug("extraction_summary", {
-    responsiveSeen: stats.responsiveSeen,
-    responsiveParsed: stats.responsiveParsed,
-    playlistVideoSeen: stats.playlistVideoSeen,
-    playlistVideoParsed: stats.playlistVideoParsed,
-    panelSeen: stats.panelSeen,
-    panelParsed: stats.panelParsed,
-    playlistItemDataSeen: stats.playlistItemDataSeen,
-    playlistItemDataParsed: stats.playlistItemDataParsed,
-    shelvesVisited: stats.shelvesVisited,
-    trackCount: tracks.length,
-    dedupedCount: deduped.length,
-    sources: Array.from(renderSources),
   });
+
+  if (BROWSE_DEBUG) {
+    console.info("[browse/playlist][debug] extraction_summary", {
+      browseId,
+      itemCount: items.length,
+      trackCount: tracks.length,
+    });
+  }
 
   console.info("[browse/playlist] parsed", {
     browseId,
     title: pickText(browseJson?.header?.musicDetailHeaderRenderer?.title) || browseId,
-    count: deduped.length,
-    sources: Array.from(renderSources),
+    count: tracks.length,
+    sources: ["twoColumn.secondaryContents.sectionList.musicPlaylistShelfRenderer.contents"],
   });
 
-  return deduped;
+  return tracks;
 }
 
 export async function browsePlaylistById(playlistIdRaw: string): Promise<PlaylistBrowse | null> {
