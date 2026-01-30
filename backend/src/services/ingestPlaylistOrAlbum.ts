@@ -627,7 +627,8 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
   const tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
   if (!tracks.length) return EMPTY_RESULT;
 
-  const allowArtistWrite = payload.kind === 'playlist' ? opts?.allowArtistWrite !== false : false;
+  // Default to writing artists for both playlists and albums unless explicitly disabled.
+  const allowArtistWrite = opts?.allowArtistWrite !== false;
   const providedPrimaryKeys = uniqueKeys(opts?.primaryArtistKeys ?? []);
   const browseKey = normalize(payload.browseId);
   if (!browseKey) return EMPTY_RESULT;
