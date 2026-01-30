@@ -264,6 +264,24 @@ async function recordPlaylistRawPayload(browseId: string, raw: any): Promise<voi
   }
 }
 
+async function recordArtistRawPayload(browseId: string, raw: any): Promise<void> {
+  try {
+    const { data, error } = await supabase
+      .from('ingest_requests')
+      .insert({ source: 'artist', payload: { browseId, raw }, status: 'raw' })
+      .select('id')
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[innertube][artist_raw] persist_failed', { browseId, message: error.message });
+    } else if (data?.id) {
+      console.info('[innertube][artist_raw] stored', { id: data.id, browseId });
+    }
+  } catch (err: any) {
+    console.warn('[innertube][artist_raw] unexpected_error', { browseId, message: err?.message });
+  }
+}
+
 function walkAll(root: any, visit: (node: any) => void): void {
   const stack: any[] = [root];
   const seen = new WeakSet<object>();
@@ -490,6 +508,8 @@ export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrow
   const payload = { context: buildContext(config), browseId };
   const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/channel/${encodeURIComponent(browseId)}`);
   if (!json) return null;
+
+  void recordArtistRawPayload(browseId, json);
 
   const header = json?.header?.musicImmersiveHeaderRenderer || json?.header?.musicHeaderRenderer;
   const name = normalize(pickText(header?.title)) || browseId;
