@@ -976,33 +976,21 @@ export async function browseArtistById(browseIdRaw: string): Promise<ArtistBrows
   return result;
 }
 
-function extractArtistNamesFromRuns(runs: Array<{ text?: string }>): string[] {
+function extractArtistNamesFromRuns(
+  runs: Array<{ text?: string }>
+): string[] {
   if (!Array.isArray(runs)) return [];
 
-  const rawText = runs.map((r) => r?.text ?? "").join("").trim();
-  if (!rawText) return [];
-
-  const parts = rawText
-    .split(/,|&|•|·|\u2022|\u00b7|\s+and\s+/gi)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const cleaned = parts.filter((p) => {
-    const lower = p.toLowerCase();
-    return lower !== "feat" && lower !== "featuring" && lower !== "ft";
-  });
-
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const name of cleaned) {
-    const key = name.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(name);
-    }
-  }
-
-  return result;
+  return runs
+    .map((r) => (r?.text ?? "").trim())
+    .filter(
+      (t) =>
+        t.length > 0 &&
+        t !== "•" &&
+        t !== "," &&
+        t !== "&" &&
+        t !== "–"
+    );
 }
 
 function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistBrowse["tracks"] {
@@ -1022,25 +1010,11 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
     if (!looksLikeVideoId(videoId)) return;
     if (seen.has(videoId)) return;
 
-    const title =
-      pickRunsText(renderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs) ||
-      pickText(renderer?.title) ||
-      pickText(renderer?.accessibilityLabel);
+    const title = pickRunsText(renderer?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs);
     if (!title) return;
 
-    const artistRuns =
-      renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [];
+    const artistRuns = renderer?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [];
     const artistNames = extractArtistNamesFromRuns(artistRuns);
-
-    const duration =
-      pickRunsText(renderer?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text?.runs) ||
-      pickText(renderer?.lengthText) ||
-      normalizeString(renderer?.lengthSeconds);
-
-    const thumbnail =
-      pickThumbnail(renderer?.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails) ||
-      pickThumbnail(renderer?.thumbnail?.thumbnails) ||
-      null;
 
     seen.add(videoId);
     tracks.push({
@@ -1048,8 +1022,8 @@ function parsePlaylistBrowseTracks(browseJson: any, browseId: string): PlaylistB
       title,
       artist: artistNames[0] || "",
       artists: artistNames.map((name) => ({ name, channelId: null })),
-      duration: duration || null,
-      thumbnail,
+      duration: null,
+      thumbnail: null,
       shortBylineText: renderer?.shortBylineText,
     });
   });
