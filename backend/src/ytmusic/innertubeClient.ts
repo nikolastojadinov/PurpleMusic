@@ -1,4 +1,5 @@
 import { normalize, toSeconds } from '../ingest/utils';
+import { getSupabaseAdmin } from '../services/supabaseClient';
 
 export type YTThumbnail = { url: string; width?: number; height?: number };
 
@@ -41,6 +42,8 @@ export type PlaylistBrowse = {
   thumbnails: YTThumbnail[];
   tracks: YTMusicTrack[];
 };
+
+type PlaylistBrowseOptions = { logRaw?: boolean };
 
 const CONSENT_COOKIES =
   'CONSENT=YES+1; SOCS=CAESHAgBEhIaZ29vZ2xlLmNvbS9jb25zZW50L2Jhc2ljLzIiDFNvaURtdXhSNVQ1ag==; PREF=f1=50000000&hl=en';
@@ -242,6 +245,38 @@ async function callYoutubei<T>(path: string, payload: Record<string, any>, refer
   } catch (err: any) {
     console.error('[innertube][request_error]', { path, message: err?.message || 'request_failed' });
     return null;
+  }
+}
+
+function hasPlaylistShelfContents(raw: any): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const stack: any[] = [raw];
+  const seen = new WeakSet<object>();
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    if (seen.has(node as object)) continue;
+    seen.add(node as object);
+
+    const shelf = (node as any)?.musicPlaylistShelfRenderer;
+    if (shelf && Array.isArray(shelf.contents) && shelf.contents.length) return true;
+
+    for (const value of Object.values(node)) stack.push(value);
+  }
+  return false;
+}
+
+async function recordPlaylistRawBrowse(browseId: string, raw: unknown): Promise<void> {
+  if (!browseId || !raw) return;
+  if (!hasPlaylistShelfContents(raw)) return;
+  try {
+    const client = getSupabaseAdmin();
+    const { error } = await client.from('ingest_requests').insert({ source: 'playlist', status: 'raw', payload: { browseId, raw } });
+    if (error) {
+      console.warn('[innertube][playlist][raw_insert_failed]', { browseId, message: error.message });
+    }
+  } catch (err: any) {
+    console.warn('[innertube][playlist][raw_capture_failed]', { browseId, message: err?.message || 'unknown_error' });
   }
 }
 
@@ -530,13 +565,17 @@ export async function fetchAlbumBrowse(browseIdRaw: string): Promise<AlbumBrowse
   };
 }
 
-export async function fetchPlaylistBrowse(browseIdRaw: string): Promise<PlaylistBrowse | null> {
+export async function fetchPlaylistBrowse(browseIdRaw: string, opts?: PlaylistBrowseOptions): Promise<PlaylistBrowse | null> {
   const browseId = normalize(browseIdRaw);
   if (!browseId) return null;
   const config = await getInnertubeConfig();
   const payload = { context: buildContext(config), browseId };
   const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`);
   if (!json) return null;
+
+  if (opts?.logRaw) {
+    void recordPlaylistRawBrowse(browseId, json);
+  }
 
   const header = json?.header?.musicDetailHeaderRenderer || json?.header?.musicTwoRowHeaderRenderer;
   const title = normalize(pickText(header?.title)) || browseId;
@@ -560,6 +599,6 @@ export async function fetchPlaylistBrowse(browseIdRaw: string): Promise<Playlist
 }
 
 // Backwards-compatible helper matching legacy browsePlaylistById API.
-export async function browsePlaylistById(playlistIdRaw: string): Promise<PlaylistBrowse | null> {
-  return fetchPlaylistBrowse(playlistIdRaw);
+export async function browsePlaylistById(playlistIdRaw: string, opts?: PlaylistBrowseOptions): Promise<PlaylistBrowse | null> {
+  return fetchPlaylistBrowse(playlistIdRaw, opts);
 }

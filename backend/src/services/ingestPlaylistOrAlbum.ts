@@ -4,6 +4,7 @@ import { linkArtistTracks, type ArtistTrackLink } from './linkArtistTracks';
 import { getSupabaseAdmin } from './supabaseClient';
 import { upsertArtists, type ArtistInput, type ArtistResult } from './upsertArtists';
 import type { PlaylistBrowse } from './youtubeMusicClient';
+import { browsePlaylistById as fetchRawPlaylistBrowse } from '../ytmusic/innertubeClient';
 
 const VIDEO_ID_REGEX = /^[A-Za-z0-9_-]{11}$/;
 const NOW = () => new Date().toISOString();
@@ -224,6 +225,14 @@ function normalizeTrackCount(value: number | null | undefined): number | null {
   if (!Number.isFinite(value)) return null;
   if (value <= 0) return null;
   return Math.trunc(value);
+}
+
+async function capturePlaylistRawBrowse(browseId: string): Promise<void> {
+  try {
+    await fetchRawPlaylistBrowse(browseId, { logRaw: true });
+  } catch (err: any) {
+    console.warn('[playlist-ingest] raw_browse_log_failed', { browseId, message: err?.message || 'unknown_error' });
+  }
 }
 
 function completionState(expected: number | null, actual: number): AlbumCompletion['state'] {
@@ -624,14 +633,19 @@ export async function ingestPlaylistOrAlbum(payload: PlaylistOrAlbumIngest, opts
   }
 
   if (!payload?.browseId) return EMPTY_RESULT;
+  const browseKey = normalize(payload.browseId);
+  if (!browseKey) return EMPTY_RESULT;
+
+  if (payload.kind === 'playlist') {
+    void capturePlaylistRawBrowse(browseKey);
+  }
+
   const tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
   if (!tracks.length) return EMPTY_RESULT;
 
   // Default to writing artists for both playlists and albums unless explicitly disabled.
   const allowArtistWrite = opts?.allowArtistWrite !== false;
   const providedPrimaryKeys = uniqueKeys(opts?.primaryArtistKeys ?? []);
-  const browseKey = normalize(payload.browseId);
-  if (!browseKey) return EMPTY_RESULT;
 
   const explicitTrackCount = normalizeTrackCount(payload.trackCount);
   const expectedTrackCount = payload.kind === 'album' ? explicitTrackCount ?? normalizeTrackCount(tracks.length) ?? tracks.length : null;
