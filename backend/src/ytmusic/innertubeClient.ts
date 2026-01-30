@@ -343,9 +343,15 @@ async function recordChannelRawBrowse(browseId: string, raw: unknown): Promise<v
 
   try {
     const client = getSupabaseAdmin();
+    const topSongsShelf = findTopSongsShelf(raw);
+    const payload = {
+      browseId,
+      header: raw?.header ?? null,
+      topSongsShelf,
+    };
     const { error } = await client
       .from('ingest_requests')
-      .insert({ source: 'artist', status: 'raw', payload: { browseId, raw } });
+      .insert({ source: 'artist', status: 'raw', payload });
     if (error) {
       console.warn('[innertube][channel][raw_insert_failed]', { browseId, message: error.message });
     } else {
@@ -378,6 +384,26 @@ function walkAll(root: any, visit: (node: any) => void): void {
       for (const value of Object.values(node)) stack.push(value);
     }
   }
+}
+
+function findTopSongsShelf(raw: any): any | null {
+  let shelf: any | null = null;
+
+  walkAll(raw, (node) => {
+    if (shelf) return;
+    const renderer = (node as any)?.musicShelfRenderer;
+    if (!renderer) return;
+    const title = pickText(renderer.title)?.toLowerCase?.() || '';
+    const looksTop = title.includes('top song') || title.includes('top tracks') || title.includes('popular');
+    if (looksTop) {
+      shelf = {
+        title: renderer.title ?? null,
+        contents: Array.isArray(renderer.contents) ? renderer.contents.slice(0, 25) : null,
+      };
+    }
+  });
+
+  return shelf;
 }
 
 function extractArtistBrowseIdFromSearch(root: any): string | null {
