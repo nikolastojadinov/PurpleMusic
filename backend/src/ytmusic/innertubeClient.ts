@@ -140,6 +140,54 @@ function buildContext(config: InnertubeConfig): any {
   };
 }
 
+function extractPlaylistShelfItems(raw: any): any[] {
+  return (
+    raw?.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer?.contents?.flatMap(
+      (c: any) => c?.musicPlaylistShelfRenderer?.contents ?? []
+    ) ?? []
+  );
+}
+
+function findContinuationToken(raw: any): string | null {
+  let token: string | null = null;
+
+  walkAll(raw, (node) => {
+    if (token) return;
+    const cont = (node as any)?.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token;
+    if (typeof cont === 'string' && cont) {
+      token = cont;
+      return;
+    }
+    const listCont = (node as any)?.playlistVideoListRenderer?.continuations?.[0]?.nextContinuationData?.continuation;
+    if (typeof listCont === 'string' && listCont) {
+      token = listCont;
+    }
+  });
+
+  return token;
+}
+
+function ensureShelfWithItems(raw: any, items: any[]): any {
+  if (!raw || typeof raw !== 'object') return raw;
+  const contents = (raw.contents = raw.contents || {});
+  const twoColumn = (contents.twoColumnBrowseResultsRenderer = contents.twoColumnBrowseResultsRenderer || {});
+  const secondary = (twoColumn.secondaryContents = twoColumn.secondaryContents || {});
+  const sectionList = (secondary.sectionListRenderer = secondary.sectionListRenderer || {});
+  const listContents = (sectionList.contents = Array.isArray(sectionList.contents) ? sectionList.contents : []);
+
+  let shelfEntry = listContents.find((c: any) => c?.musicPlaylistShelfRenderer);
+  if (!shelfEntry) {
+    shelfEntry = { musicPlaylistShelfRenderer: { contents: [] } };
+    listContents.push(shelfEntry);
+  }
+
+  if (!shelfEntry.musicPlaylistShelfRenderer) {
+    shelfEntry.musicPlaylistShelfRenderer = { contents: [] };
+  }
+  shelfEntry.musicPlaylistShelfRenderer.contents = items;
+  return raw;
+}
+
 async function loadInnertubeConfig(): Promise<InnertubeConfig> {
   const urls = ['https://music.youtube.com/?hl=en&gl=US', 'https://www.youtube.com/?hl=en&gl=US'];
   const headers = {
@@ -565,24 +613,56 @@ export async function fetchAlbumBrowse(browseIdRaw: string): Promise<AlbumBrowse
   };
 }
 
-export async function fetchPlaylistBrowse(browseIdRaw: string, opts?: PlaylistBrowseOptions): Promise<PlaylistBrowse | null> {
+export async function fetchPlaylistBrowseRaw(browseIdRaw: string, opts?: PlaylistBrowseOptions): Promise<any | null> {
   const browseId = normalize(browseIdRaw);
   if (!browseId) return null;
   const config = await getInnertubeConfig();
-  const payload = { context: buildContext(config), browseId };
-  const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`);
-  if (!json) return null;
 
-  if (opts?.logRaw) {
-    void recordPlaylistRawBrowse(browseId, json);
+  const first = await callYoutubei<any>(
+    'browse',
+    { context: buildContext(config), browseId },
+    `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`
+  );
+  if (!first) return null;
+
+  let items = extractPlaylistShelfItems(first);
+  let current = first;
+  let attempts = 0;
+  while (items.length === 0 && attempts < 5) {
+    const token = findContinuationToken(current);
+    if (!token) break;
+    const cont = await callYoutubei<any>(
+      'browse',
+      { context: buildContext(config), continuation: token },
+      `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`
+    );
+    if (!cont) break;
+    current = cont;
+    const more = extractPlaylistShelfItems(cont);
+    if (more.length) items = items.concat(more);
+    attempts += 1;
   }
 
-  const header = json?.header?.musicDetailHeaderRenderer || json?.header?.musicTwoRowHeaderRenderer;
+  let raw = first;
+  if (items.length) {
+    raw = ensureShelfWithItems(first, items);
+    if (opts?.logRaw) void recordPlaylistRawBrowse(browseId, raw);
+  }
+
+  return raw;
+}
+
+export async function fetchPlaylistBrowse(browseIdRaw: string, opts?: PlaylistBrowseOptions): Promise<PlaylistBrowse | null> {
+  const raw = await fetchPlaylistBrowseRaw(browseIdRaw, opts);
+  const browseId = normalize(browseIdRaw);
+  if (!raw || !browseId) return null;
+
+  const header = raw?.header?.musicDetailHeaderRenderer || raw?.header?.musicTwoRowHeaderRenderer;
   const title = normalize(pickText(header?.title)) || browseId;
   const subtitle = normalize(pickText(header?.subtitle)) || null;
   const thumbnails = collectThumbnails(header?.thumbnail?.musicThumbnailRenderer, header?.thumbnail);
   const thumbnail = thumbnails.at(-1)?.url ?? null;
-  const tracks = parseSongsFromBrowse(json, subtitle || title);
+  const tracks = parseSongsFromBrowse(raw, subtitle || title);
 
   if (tracks.length) {
     console.log('[debug][parser] firstTrack.thumbnails', tracks[0]?.thumbnails || []);

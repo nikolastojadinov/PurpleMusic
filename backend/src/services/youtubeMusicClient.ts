@@ -2,6 +2,7 @@ import { CONSENT_COOKIES, fetchInnertubeConfig, type InnertubeConfig } from "./y
 import { parseArtistBrowseFromInnertube, type ArtistBrowse } from "./ytmArtistParser";
 import { recordInnertubePayload } from "./innertubeRawStore";
 import { getSupabaseAdmin } from "./supabaseClient";
+import { fetchPlaylistBrowseRaw } from "./ytmusic/innertubeClient";
 
 export type { ArtistBrowse } from "./ytmArtistParser";
 
@@ -1078,15 +1079,9 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
   const upper = playlistId.toUpperCase();
   const browseId = upper.startsWith("VL") || upper.startsWith("MPRE") || upper.startsWith("OLAK") ? playlistId : `VL${playlistId}`;
 
-  const config = await fetchInnertubeConfig();
-  if (!config) return null;
+  const browseJson = await fetchPlaylistBrowseRaw(browseId, { logRaw: true });
 
-  const browseJson = await callYoutubei<any>(config, "browse", {
-    context: buildSearchBody(config, "").context,
-    browseId,
-  });
-
-  void recordPlaylistRawBrowse(browseId, browseJson);
+  if (!browseJson) return null;
 
   try {
     console.error("[DEBUG][RAW_BROWSE_JSON]", JSON.stringify(browseJson, null, 2).slice(0, 20000));
@@ -1100,8 +1095,6 @@ export async function browsePlaylistById(playlistIdRaw: string): Promise<Playlis
     console.log("[YT RAW PLAYLIST BROWSE] root keys:", Object.keys(browseJson || {}));
     console.log("[YT RAW PLAYLIST BROWSE] contents:", JSON.stringify(browseJson?.contents ?? null, null, 2));
   }
-
-  if (!browseJson) return null;
 
   const header = browseJson?.header?.musicDetailHeaderRenderer;
   const title = pickText(header?.title) || playlistId;
