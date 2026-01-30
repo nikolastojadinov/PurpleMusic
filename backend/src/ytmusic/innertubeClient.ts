@@ -145,11 +145,33 @@ function buildContext(config: InnertubeConfig): any {
 }
 
 function extractPlaylistShelfItems(raw: any): any[] {
-  return (
-    raw?.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer?.contents?.flatMap(
-      (c: any) => c?.musicPlaylistShelfRenderer?.contents ?? []
-    ) ?? []
-  );
+  const collect: any[] = [];
+
+  const pushShelf = (renderer: any) => {
+    const contents = renderer?.musicPlaylistShelfRenderer?.contents || renderer?.musicShelfRenderer?.contents;
+    if (Array.isArray(contents)) collect.push(...contents);
+  };
+
+  const secondary = raw?.contents?.twoColumnBrowseResultsRenderer?.secondaryContents?.sectionListRenderer?.contents;
+  if (Array.isArray(secondary)) {
+    secondary.forEach((c: any) => {
+      if (c?.musicPlaylistShelfRenderer || c?.musicShelfRenderer) pushShelf(c);
+    });
+  }
+
+  const singleColumnTabs = raw?.contents?.singleColumnBrowseResultsRenderer?.tabs;
+  if (Array.isArray(singleColumnTabs)) {
+    singleColumnTabs.forEach((t: any) => {
+      const sections = t?.tabRenderer?.content?.sectionListRenderer?.contents;
+      if (Array.isArray(sections)) {
+        sections.forEach((c: any) => {
+          if (c?.musicPlaylistShelfRenderer || c?.musicShelfRenderer) pushShelf(c);
+        });
+      }
+    });
+  }
+
+  return collect;
 }
 
 function findContinuationToken(raw: any): string | null {
@@ -166,6 +188,16 @@ function findContinuationToken(raw: any): string | null {
     if (typeof listCont === 'string' && listCont) {
       token = listCont;
     }
+
+    const musicShelfCont = (node as any)?.musicShelfContinuation?.continuations?.[0]?.nextContinuationData?.continuation;
+    if (typeof musicShelfCont === 'string' && musicShelfCont) {
+      token = musicShelfCont;
+    }
+
+    const shelfCont = (node as any)?.musicPlaylistShelfContinuation?.continuations?.[0]?.nextContinuationData?.continuation;
+    if (typeof shelfCont === 'string' && shelfCont) {
+      token = shelfCont;
+    }
   });
 
   return token;
@@ -179,16 +211,20 @@ function ensureShelfWithItems(raw: any, items: any[]): any {
   const sectionList = (secondary.sectionListRenderer = secondary.sectionListRenderer || {});
   const listContents = (sectionList.contents = Array.isArray(sectionList.contents) ? sectionList.contents : []);
 
-  let shelfEntry = listContents.find((c: any) => c?.musicPlaylistShelfRenderer);
+  let shelfEntry = listContents.find((c: any) => c?.musicPlaylistShelfRenderer || c?.musicShelfRenderer);
   if (!shelfEntry) {
     shelfEntry = { musicPlaylistShelfRenderer: { contents: [] } };
     listContents.push(shelfEntry);
   }
 
-  if (!shelfEntry.musicPlaylistShelfRenderer) {
-    shelfEntry.musicPlaylistShelfRenderer = { contents: [] };
+  const renderer = shelfEntry.musicPlaylistShelfRenderer || shelfEntry.musicShelfRenderer || { contents: [] };
+  if (shelfEntry.musicPlaylistShelfRenderer) {
+    shelfEntry.musicPlaylistShelfRenderer = renderer;
+  } else {
+    shelfEntry.musicShelfRenderer = renderer;
   }
-  shelfEntry.musicPlaylistShelfRenderer.contents = items;
+
+  renderer.contents = items;
   return raw;
 }
 
@@ -198,8 +234,11 @@ function extractPlaylistContinuationItems(raw: any): { items: any[]; token: stri
   const primary = extractPlaylistShelfItems(raw);
   if (Array.isArray(primary)) items.push(...primary);
 
-  const continuationItems = raw?.continuationContents?.musicPlaylistShelfContinuation?.contents;
-  if (Array.isArray(continuationItems)) items.push(...continuationItems);
+  const playlistContinuation = raw?.continuationContents?.musicPlaylistShelfContinuation?.contents;
+  if (Array.isArray(playlistContinuation)) items.push(...playlistContinuation);
+
+  const shelfContinuation = raw?.continuationContents?.musicShelfContinuation?.contents;
+  if (Array.isArray(shelfContinuation)) items.push(...shelfContinuation);
 
   const token = findContinuationToken(raw);
 
@@ -650,9 +689,12 @@ export async function resolveArtistBrowseIdByName(nameRaw: string): Promise<stri
 export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrowse | null> {
   const browseId = normalize(browseIdRaw);
   if (!browseId) return null;
-  const config = await getInnertubeConfig();
-  const payload = { context: buildContext(config), browseId };
-  const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/channel/${encodeURIComponent(browseId)}`);
+
+  const json = await fetchBrowseWithContinuations(browseId, {
+    referer: `https://music.youtube.com/channel/${encodeURIComponent(browseId)}`,
+    logRaw: true,
+    maxContinuations: 10,
+  });
   if (!json) return null;
 
   // Capture raw channel payload for debugging ingest (phase 1).
@@ -685,9 +727,11 @@ export async function fetchArtistBrowse(browseIdRaw: string): Promise<ArtistBrow
 export async function fetchAlbumBrowse(browseIdRaw: string): Promise<AlbumBrowse | null> {
   const browseId = normalize(browseIdRaw);
   if (!browseId) return null;
-  const config = await getInnertubeConfig();
-  const payload = { context: buildContext(config), browseId };
-  const json = await callYoutubei<any>('browse', payload, `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`);
+
+  const json = await fetchBrowseWithContinuations(browseId, {
+    referer: `https://music.youtube.com/playlist?list=${encodeURIComponent(browseId)}`,
+    maxContinuations: 25,
+  });
   if (!json) return null;
 
   const header = json?.header?.musicDetailHeaderRenderer || json?.header?.musicTwoRowHeaderRenderer;

@@ -921,7 +921,7 @@ export async function browseArtistById(browseIdRaw: string): Promise<ArtistBrows
 
   const browseJson = await fetchBrowseWithContinuations(browseId, {
     logRaw: true,
-    maxContinuations: 5,
+    maxContinuations: 10,
   });
   if (!browseJson) return null;
 
