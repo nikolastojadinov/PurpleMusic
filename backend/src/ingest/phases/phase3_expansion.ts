@@ -95,24 +95,34 @@ function canonicalArtistKey(name: string): string {
 }
 
 function extractPlaylistTrackArtists(rawItem: any): ArtistRun[] {
-  const runs = rawItem?.shortBylineText?.runs;
-  if (!runs || !Array.isArray(runs)) return [];
+  const fromStructured = Array.isArray(rawItem?.artists)
+    ? rawItem.artists
+        .map((a: any) => ({ name: typeof a?.name === "string" ? a.name.trim() : "", channelId: a?.channelId }))
+        .filter((a: any) => a.name)
+    : [];
 
+  const fromRuns = Array.isArray(rawItem?.shortBylineText?.runs)
+    ? rawItem.shortBylineText.runs
+        .map((r: any) => ({
+          name: typeof r?.text === "string" ? r.text.trim() : "",
+          channelId: typeof r?.navigationEndpoint?.browseEndpoint?.browseId === "string"
+            ? r.navigationEndpoint.browseEndpoint.browseId.trim()
+            : "",
+        }))
+        .filter((r: any) => r.name)
+    : [];
+
+  const candidates = [...fromStructured, ...fromRuns];
   const seen = new Set<string>();
   const artists: ArtistRun[] = [];
 
-  runs.forEach((r: any) => {
-    const name = typeof r?.text === "string" ? r.text.trim() : "";
-    const browseIdRaw = r?.navigationEndpoint?.browseEndpoint?.browseId;
-    const browseId = typeof browseIdRaw === "string" ? browseIdRaw.trim() : "";
-    if (!name || !browseId) return;
-
-    const artistKey = canonicalArtistKey(name);
+  candidates.forEach((c) => {
+    const artistKey = canonicalArtistKey(c.name);
     if (!artistKey || seen.has(artistKey)) return;
     seen.add(artistKey);
 
-    const youtubeChannelId = browseId.startsWith("UC") ? browseId : null;
-    artists.push({ name, artistKey, youtubeChannelId });
+    const youtubeChannelId = typeof c.channelId === "string" && c.channelId.startsWith("UC") ? c.channelId : null;
+    artists.push({ name: c.name, artistKey, youtubeChannelId });
   });
 
   return artists;
