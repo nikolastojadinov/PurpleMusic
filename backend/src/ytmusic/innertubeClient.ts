@@ -383,6 +383,17 @@ function walkAll(root: any, visit: (node: any) => void): void {
 function findTopSongsShelf(raw: any): any | null {
   let shelf: any | null = null;
 
+  // Prefer the canonical path under singleColumnBrowseResultsRenderer → tabs → sectionListRenderer.
+  const tabContents =
+    raw?.contents?.singleColumnBrowseResultsRenderer?.tabs?.flatMap((t: any) => t?.tabRenderer?.content?.sectionListRenderer?.contents || []) || [];
+  for (const entry of tabContents) {
+    const renderer = entry?.musicShelfRenderer;
+    const title = pickText(renderer?.title)?.toLowerCase?.() || '';
+    if (renderer && title.includes('top song')) {
+      return { title: renderer.title ?? null, contents: Array.isArray(renderer.contents) ? renderer.contents.slice(0, 25) : null };
+    }
+  }
+
   walkAll(raw, (node) => {
     if (shelf) return;
     const renderer = (node as any)?.musicShelfRenderer;
