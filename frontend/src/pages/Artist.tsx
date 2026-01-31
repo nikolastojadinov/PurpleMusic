@@ -22,6 +22,7 @@ type TrackRecord = {
   view_count?: number | null;
   image_url?: string | null;
   cover_url?: string | null;
+  position?: number | null;
 };
 
 type AlbumRecord = {
@@ -52,6 +53,7 @@ export default function ArtistPage() {
 
   const [artist, setArtist] = useState<ArtistRecord | null>(null);
   const [tracks, setTracks] = useState<TrackRecord[]>([]);
+  const [topTracks, setTopTracks] = useState<TrackRecord[]>([]);
   const [albums, setAlbums] = useState<AlbumRecord[]>([]);
   const [playlists, setPlaylists] = useState<PlaylistRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,7 +61,8 @@ export default function ArtistPage() {
 
   const artistName = useMemo(() => artist?.display_name || artist?.name || "Artist", [artist]);
   const heroImage = useMemo(() => artist?.image_url || "https://images.unsplash.com/photo-1507878866276-a947ef722fee?auto=format&fit=crop&w=1600&q=80", [artist]);
-  const topSong = useMemo(() => tracks[0], [tracks]);
+  const topSong = useMemo(() => (topTracks.length ? topTracks[0] : tracks[0]), [topTracks, tracks]);
+  const popularTracks = useMemo(() => (topTracks.length ? topTracks : tracks), [topTracks, tracks]);
 
   useEffect(() => {
     if (!artistId) return;
@@ -82,12 +85,19 @@ export default function ArtistPage() {
         setArtist(artistData as ArtistRecord);
         const artistKey = artistData.artist_key || artistData.name;
 
-        const [tracksRes, albumsRes, playlistLinkRes] = await Promise.all([
+        const [tracksRes, topTracksRes, albumsRes, playlistLinkRes] = await Promise.all([
           client
             .from("tracks")
             .select("id,title,duration_sec,view_count,image_url,cover_url")
             .eq("artist_key", artistKey)
             .order("view_count", { ascending: false })
+            .limit(12),
+          client
+            .from("artist_tracks")
+            .select("position, track:tracks(id,title,duration_sec,view_count,image_url,cover_url)")
+            .eq("artist_key", artistKey)
+            .eq("is_top_song", true)
+            .order("position", { ascending: true })
             .limit(12),
           client
             .from("albums")
@@ -99,10 +109,13 @@ export default function ArtistPage() {
         ]);
 
         if (tracksRes.error) throw new Error(tracksRes.error.message);
+        if (topTracksRes.error) throw new Error(topTracksRes.error.message);
         if (albumsRes.error) throw new Error(albumsRes.error.message);
         if (playlistLinkRes.error) throw new Error(playlistLinkRes.error.message);
 
         setTracks((tracksRes.data as TrackRecord[]) || []);
+        const mappedTop = (topTracksRes.data as any[])?.map((row) => ({ ...(row?.track || {}), position: row?.position }))?.filter((t) => t?.id);
+        setTopTracks(mappedTop || []);
         setAlbums((albumsRes.data as AlbumRecord[]) || []);
 
         const playlistIds = (playlistLinkRes.data || []).map((p: any) => p.playlist_id).filter(Boolean);
@@ -224,9 +237,9 @@ export default function ArtistPage() {
               <h2 className="text-lg font-semibold text-white md:text-xl">Popular songs</h2>
               <span className="text-xs text-white/60">Iz baze</span>
             </div>
-            {tracks.length ? (
+            {popularTracks.length ? (
               <div className="divide-y divide-white/5 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
-                {tracks.map((song, index) => (
+                {popularTracks.map((song, index) => (
                   <div key={song.id} className="flex items-center gap-3 px-4 py-3">
                     <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md border border-white/10 bg-neutral-800">
                       <img src={song.cover_url || song.image_url || heroImage} alt="" className="h-full w-full object-cover" loading="lazy" />
@@ -236,7 +249,7 @@ export default function ArtistPage() {
                       <div className="text-xs text-white/60">{artistName}</div>
                     </div>
                     <div className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/70">
-                      {formatDuration(song.duration_sec)} · #{index + 1}
+                      {formatDuration(song.duration_sec)} · #{(song.position ?? index) + 1}
                     </div>
                   </div>
                 ))}
