@@ -1,36 +1,147 @@
-import { useMemo } from "react";
-import { ArrowLeft, Heart, Play, Shuffle, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Heart, Loader2, Play, Shuffle, Sparkles } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
-const songs = [
-  { title: "Velvet Skyline", duration: "3:22", image: "https://images.unsplash.com/photo-1464375117522-1311d6a5b81f?auto=format&fit=crop&w=600&q=80" },
-  { title: "Glass Atlas", duration: "2:58", image: "https://images.unsplash.com/photo-1483412033650-1015ddeb83d1?auto=format&fit=crop&w=600&q=80" },
-  { title: "Neon Letters", duration: "3:47", image: "https://images.unsplash.com/photo-1464375117522-1311d6a5b81f?auto=format&fit=crop&w=600&q=80" },
-  { title: "Polaroid Bloom", duration: "4:02", image: "https://images.unsplash.com/photo-1440404653325-ab127d49abc1?auto=format&fit=crop&w=600&q=80" },
-];
+import { getSupabaseClient } from "../lib/supabaseClient";
 
-const albums = [
-  { title: "Analog Bloom", year: "2024", image: "https://images.unsplash.com/photo-1501612780327-45045538702b?auto=format&fit=crop&w=600&q=80" },
-  { title: "Future Nostalgia", year: "2023", image: "https://images.unsplash.com/photo-1470229538611-16ba8c7ffbd7?auto=format&fit=crop&w=600&q=80" },
-  { title: "Indie Sunlight", year: "2022", image: "https://images.unsplash.com/photo-1483412033650-1015ddeb83d1?auto=format&fit=crop&w=600&q=80" },
-];
+type ArtistRecord = {
+  id: string;
+  name: string;
+  display_name?: string | null;
+  image_url?: string | null;
+  description?: string | null;
+  artist_key?: string | null;
+  country?: string | null;
+  subscriber_count?: number | null;
+};
 
-const playlists = [
-  { title: "Crush // Covers", image: "https://images.unsplash.com/photo-1511379938547-c1f69419868d?auto=format&fit=crop&w=600&q=80" },
-  { title: "Bass Therapy", image: "https://images.unsplash.com/photo-1507878866276-a947ef722fee?auto=format&fit=crop&w=600&q=80" },
-];
+type TrackRecord = {
+  id: string;
+  title: string;
+  duration_sec?: number | null;
+  view_count?: number | null;
+  image_url?: string | null;
+  cover_url?: string | null;
+};
 
-const aboutLines = [
-  "Hajde-inspired hero with layered gradients and soft glow.",
-  "This page is static—wire your own data sources when ready.",
-  "Design matched to hajde-music-stream for visual parity.",
-];
+type AlbumRecord = {
+  id: string;
+  title: string;
+  cover_url?: string | null;
+  release_date?: string | null;
+  album_type?: string | null;
+};
+
+type PlaylistRecord = {
+  id: string;
+  title: string;
+  cover_url?: string | null;
+  description?: string | null;
+  playlist_type?: string | null;
+};
+
+const formatDuration = (seconds?: number | null) => {
+  if (!seconds || seconds <= 0) return "-";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+};
 
 export default function ArtistPage() {
   const { artistId } = useParams();
-  const artistName = useMemo(() => artistId?.toString() || "Serene Echoes", [artistId]);
 
-  const heroImage = "https://images.unsplash.com/photo-1507878866276-a947ef722fee?auto=format&fit=crop&w=1600&q=80";
+  const [artist, setArtist] = useState<ArtistRecord | null>(null);
+  const [tracks, setTracks] = useState<TrackRecord[]>([]);
+  const [albums, setAlbums] = useState<AlbumRecord[]>([]);
+  const [playlists, setPlaylists] = useState<PlaylistRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const artistName = useMemo(() => artist?.display_name || artist?.name || "Artist", [artist]);
+  const heroImage = useMemo(() => artist?.image_url || "https://images.unsplash.com/photo-1507878866276-a947ef722fee?auto=format&fit=crop&w=1600&q=80", [artist]);
+  const topSong = useMemo(() => tracks[0], [tracks]);
+
+  useEffect(() => {
+    if (!artistId) return;
+
+    const load = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const client = getSupabaseClient();
+
+        const { data: artistData, error: artistErr } = await client
+          .from("artists")
+          .select("id,name,display_name,image_url,description,artist_key,country,subscriber_count")
+          .eq("id", artistId)
+          .single();
+
+        if (artistErr) throw new Error(artistErr.message);
+        if (!artistData) throw new Error("Artist not found");
+
+        setArtist(artistData as ArtistRecord);
+        const artistKey = artistData.artist_key || artistData.name;
+
+        const [tracksRes, albumsRes, playlistLinkRes] = await Promise.all([
+          client
+            .from("tracks")
+            .select("id,title,duration_sec,view_count,image_url,cover_url")
+            .eq("artist_key", artistKey)
+            .order("view_count", { ascending: false })
+            .limit(12),
+          client
+            .from("albums")
+            .select("id,title,cover_url,release_date,album_type")
+            .eq("artist_id", artistData.id)
+            .order("release_date", { ascending: false })
+            .limit(12),
+          client.from("artist_playlists").select("playlist_id").eq("artist_id", artistData.id).limit(12),
+        ]);
+
+        if (tracksRes.error) throw new Error(tracksRes.error.message);
+        if (albumsRes.error) throw new Error(albumsRes.error.message);
+        if (playlistLinkRes.error) throw new Error(playlistLinkRes.error.message);
+
+        setTracks((tracksRes.data as TrackRecord[]) || []);
+        setAlbums((albumsRes.data as AlbumRecord[]) || []);
+
+        const playlistIds = (playlistLinkRes.data || []).map((p: any) => p.playlist_id).filter(Boolean);
+        if (playlistIds.length) {
+          const { data: playlistsData, error: playlistsErr } = await client
+            .from("playlists")
+            .select("id,title,cover_url,description,playlist_type")
+            .in("id", playlistIds);
+          if (playlistsErr) throw new Error(playlistsErr.message);
+          setPlaylists((playlistsData as PlaylistRecord[]) || []);
+        } else {
+          setPlaylists([]);
+        }
+      } catch (err: any) {
+        setError(err?.message || "Nije moguće učitati artista iz baze.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void load();
+  }, [artistId]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-3 text-white/70">
+        <Loader2 className="h-5 w-5 animate-spin" />
+        Učitavanje artista...
+      </div>
+    );
+  }
+
+  if (error || !artist) {
+    return (
+      <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
+        {error || "Artist nije pronađen."}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -40,23 +151,26 @@ export default function ArtistPage() {
           style={{ backgroundImage: `linear-gradient(160deg, rgba(246,198,109,0.24), rgba(8,7,15,0.9)), url(${heroImage})`, backgroundSize: "cover", backgroundPosition: "center" }}
         >
           <div className="absolute left-4 top-4 flex gap-2">
-            <Link to="/" className="rounded-full border border-white/10 bg-black/40 px-4 py-2 text-sm font-semibold text-white hover:border-white/25">
+            <Link to="/search" className="rounded-full border border-white/10 bg-black/40 px-4 py-2 text-sm font-semibold text-white hover:border-white/25">
               <ArrowLeft className="mr-2 inline-block h-4 w-4" /> Back
             </Link>
             <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
-              <Sparkles className="h-4 w-4 text-[#F6C66D]" /> Visual placeholder
+              <Sparkles className="h-4 w-4 text-[#F6C66D]" /> From Supabase
             </span>
           </div>
 
           <div className="absolute bottom-8 left-0 w-full px-4 md:px-6">
-            <div className="flex items-end gap-4">
-              <div className="h-20 w-20 overflow-hidden rounded-full border border-white/15 bg-neutral-900 shadow-lg md:h-24 md:w-24">
-                <img src={heroImage} alt={artistName} className="h-full w-full object-cover" />
+            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+              <div className="flex items-end gap-4">
+                <div className="h-20 w-20 overflow-hidden rounded-full border border-white/15 bg-neutral-900 shadow-lg md:h-24 md:w-24">
+                  <img src={heroImage} alt={artistName} className="h-full w-full object-cover" />
+                </div>
+                <div className="space-y-2">
+                  <h1 className="text-3xl font-black leading-tight text-white drop-shadow md:text-4xl">{artistName}</h1>
+                  <p className="text-sm font-medium uppercase tracking-wide text-white/80">Artist</p>
+                </div>
               </div>
-              <div className="space-y-2">
-                <h1 className="text-3xl font-black leading-tight text-white drop-shadow md:text-4xl">{artistName}</h1>
-                <p className="text-sm font-medium uppercase tracking-wide text-white/80">Artist</p>
-              </div>
+              <p className="max-w-xl text-sm text-white/75 line-clamp-2 md:text-right">{artist.description || "Opis nije dostupan."}</p>
             </div>
           </div>
         </div>
@@ -78,59 +192,100 @@ export default function ArtistPage() {
             </button>
           </div>
 
+          {topSong ? (
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-white md:text-xl">Top song</h2>
+                  <p className="text-xs text-white/60">Najslušanija pesma iz baze</p>
+                </div>
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">{formatDuration(topSong.duration_sec)}</span>
+              </div>
+              <div className="flex items-center gap-4 overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-neutral-900">
+                  <img src={topSong.cover_url || topSong.image_url || heroImage} alt="" className="h-full w-full object-cover" loading="lazy" />
+                </div>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="truncate text-base font-semibold text-white">{topSong.title}</div>
+                  <div className="text-xs text-white/60">{artistName}</div>
+                  {typeof topSong.view_count === "number" ? <div className="text-xs text-white/60">{topSong.view_count.toLocaleString()} pregleda</div> : null}
+                </div>
+                <button className="pm-cta-pill" type="button">
+                  <span className="pm-cta-pill-inner">
+                    <Play className="h-4 w-4" /> Play
+                  </span>
+                </button>
+              </div>
+            </section>
+          ) : null}
+
           <section className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-white md:text-xl">Popular songs</h2>
-              <span className="text-xs text-white/60">Static list</span>
+              <span className="text-xs text-white/60">Iz baze</span>
             </div>
-            <div className="divide-y divide-white/5 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
-              {songs.map((song, index) => (
-                <div key={song.title} className="flex items-center gap-3 px-4 py-3">
-                  <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md border border-white/10 bg-neutral-800">
-                    <img src={song.image} alt="" className="h-full w-full object-cover" loading="lazy" />
+            {tracks.length ? (
+              <div className="divide-y divide-white/5 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+                {tracks.map((song, index) => (
+                  <div key={song.id} className="flex items-center gap-3 px-4 py-3">
+                    <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md border border-white/10 bg-neutral-800">
+                      <img src={song.cover_url || song.image_url || heroImage} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold text-white">{song.title}</div>
+                      <div className="text-xs text-white/60">{artistName}</div>
+                    </div>
+                    <div className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/70">
+                      {formatDuration(song.duration_sec)} · #{index + 1}
+                    </div>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold text-white">{song.title}</div>
-                    <div className="text-xs text-white/60">{artistName}</div>
-                  </div>
-                  <div className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/70">{song.duration} · #{index + 1}</div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70">Nema pesama za ovog artista.</div>
+            )}
           </section>
 
           <section className="space-y-3">
             <h2 className="text-lg font-semibold text-white md:text-xl">Albums</h2>
-            <div className="flex gap-4 overflow-x-auto pb-1">
-              {albums.map((album) => (
-                <div key={album.title} className="w-40 flex-shrink-0">
-                  <div className="h-40 overflow-hidden rounded-xl border border-white/10 bg-neutral-900">
-                    <img src={album.image} alt="" className="h-full w-full object-cover" loading="lazy" />
+            {albums.length ? (
+              <div className="flex gap-4 overflow-x-auto pb-1">
+                {albums.map((album) => (
+                  <div key={album.id} className="w-40 flex-shrink-0">
+                    <div className="h-40 overflow-hidden rounded-xl border border-white/10 bg-neutral-900">
+                      <img src={album.cover_url || heroImage} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <div className="truncate text-sm font-semibold text-white">{album.title}</div>
+                      <div className="text-xs text-white/60">{album.release_date?.slice(0, 4) || album.album_type || "Album"}</div>
+                    </div>
                   </div>
-                  <div className="mt-2 space-y-1">
-                    <div className="truncate text-sm font-semibold text-white">{album.title}</div>
-                    <div className="text-xs text-white/60">{album.year}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70">Nema albuma.</div>
+            )}
           </section>
 
           <section className="space-y-3">
             <h2 className="text-lg font-semibold text-white md:text-xl">Playlists</h2>
-            <div className="flex gap-4 overflow-x-auto pb-1">
-              {playlists.map((playlist) => (
-                <div key={playlist.title} className="w-40 flex-shrink-0">
-                  <div className="h-40 overflow-hidden rounded-xl border border-white/10 bg-neutral-900">
-                    <img src={playlist.image} alt="" className="h-full w-full object-cover" loading="lazy" />
+            {playlists.length ? (
+              <div className="flex gap-4 overflow-x-auto pb-1">
+                {playlists.map((playlist) => (
+                  <div key={playlist.id} className="w-40 flex-shrink-0">
+                    <div className="h-40 overflow-hidden rounded-xl border border-white/10 bg-neutral-900">
+                      <img src={playlist.cover_url || heroImage} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <div className="truncate text-sm font-semibold text-white">{playlist.title}</div>
+                      <div className="text-xs text-white/60">{playlist.playlist_type || playlist.description || "Playlist"}</div>
+                    </div>
                   </div>
-                  <div className="mt-2 space-y-1">
-                    <div className="truncate text-sm font-semibold text-white">{playlist.title}</div>
-                    <div className="text-xs text-white/60">Curated for {artistName}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70">Nema plejlista.</div>
+            )}
           </section>
 
           <section className="space-y-3 border-t border-white/5 pt-4">
@@ -138,21 +293,19 @@ export default function ArtistPage() {
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs text-white/60">Monthly listeners</p>
-                <p className="text-xl font-bold text-white">2.1M</p>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs text-white/60">Since</p>
-                <p className="text-xl font-bold text-white">2018</p>
+                <p className="text-xl font-bold text-white">{artist.subscriber_count ? artist.subscriber_count.toLocaleString() : "-"}</p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs text-white/60">Origin</p>
-                <p className="text-xl font-bold text-white">Belgrade</p>
+                <p className="text-xl font-bold text-white">{artist.country || "-"}</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-xs text-white/60">Tracks loaded</p>
+                <p className="text-xl font-bold text-white">{tracks.length}</p>
               </div>
             </div>
             <div className="space-y-2 text-sm leading-relaxed text-white/80">
-              {aboutLines.map((line) => (
-                <p key={line}>{line}</p>
-              ))}
+              {artist.description ? artist.description.split("\n").map((line) => <p key={line}>{line}</p>) : <p className="text-white/60">Opis nije dostupan.</p>}
             </div>
           </section>
         </div>

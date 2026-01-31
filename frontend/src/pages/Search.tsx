@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AlertCircle, Loader2, Music2, Search as SearchIcon, Sparkles, UserRound } from "lucide-react";
 
 import { getSupabaseClient } from "../lib/supabaseClient";
@@ -124,6 +125,7 @@ async function fetchFromSupabase(q: string, limitPerType = 8): Promise<SearchRes
 }
 
 export default function SearchPage() {
+  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -253,18 +255,34 @@ export default function SearchPage() {
                 <span className="uppercase tracking-[0.14em] text-white/70">{section}</span>
               </div>
               <div className="divide-y divide-white/5 rounded-xl border border-white/5">
-                {items.map((item) => (
-                  <div key={`${section}-${item.id}`} className="flex items-center gap-3 bg-white/0 px-4 py-3 text-left text-sm text-white">
-                    <Thumb imageUrl={item.imageUrl} fallback={iconFor(section)} />
-                    <div className="min-w-0">
-                      <div className="truncate font-semibold">{item.title}</div>
-                      <div className="truncate text-xs text-white/60">{item.subtitle || section}</div>
-                    </div>
-                    <span className="ml-auto rounded-full border border-white/10 px-3 py-1 text-[11px] uppercase tracking-[0.1em] text-white/60">
-                      {section}
-                    </span>
-                  </div>
-                ))}
+                {items.map((item) => {
+                  const isArtist = section === "artist";
+                  const Wrapper: any = isArtist ? "button" : "div";
+
+                  return (
+                    <Wrapper
+                      key={`${section}-${item.id}`}
+                      className={`flex items-center gap-3 bg-white/0 px-4 py-3 text-left text-sm text-white ${
+                        isArtist ? "w-full text-left hover:bg-white/5" : ""
+                      }`}
+                      {...(isArtist
+                        ? {
+                            type: "button",
+                            onClick: () => navigate(`/artist/${item.id}`),
+                          }
+                        : {})}
+                    >
+                      <Thumb imageUrl={item.imageUrl} fallback={iconFor(section)} />
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold">{item.title}</div>
+                        <div className="truncate text-xs text-white/60">{item.subtitle || section}</div>
+                      </div>
+                      <span className="ml-auto rounded-full border border-white/10 px-3 py-1 text-[11px] uppercase tracking-[0.1em] text-white/60">
+                        {section}
+                      </span>
+                    </Wrapper>
+                  );
+                })}
               </div>
             </section>
           );
@@ -303,6 +321,10 @@ export default function SearchPage() {
               type="button"
               className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-white hover:bg-white/10"
               onClick={() => {
+                if (item.type === "artist") {
+                  navigate(`/artist/${item.id}`);
+                  return;
+                }
                 setQuery(item.title);
                 void runSearch(item.title);
               }}
