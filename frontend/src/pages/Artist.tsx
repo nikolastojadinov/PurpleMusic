@@ -174,16 +174,11 @@ export default function ArtistPage() {
 
           <div className="absolute bottom-8 left-0 w-full px-4 md:px-6">
             <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-              <div className="flex items-end gap-4">
-                <div className="h-20 w-20 overflow-hidden rounded-full border border-white/15 bg-neutral-900 shadow-lg md:h-24 md:w-24">
-                  <img src={heroImage} alt={artistName} className="h-full w-full object-cover" />
-                </div>
-                <div className="space-y-2">
-                  <h1 className="text-3xl font-black leading-tight text-white drop-shadow md:text-4xl">{artistName}</h1>
-                  <p className="text-sm font-medium uppercase tracking-wide text-white/80">Artist</p>
-                </div>
+              <div className="space-y-2">
+                <h1 className="text-3xl font-black leading-tight text-white drop-shadow md:text-4xl">{artistName}</h1>
+                <p className="text-sm font-medium uppercase tracking-wide text-white/80">Artist</p>
               </div>
-              <p className="max-w-xl text-sm text-white/75 line-clamp-2 md:text-right">{artist.description || "Opis nije dostupan."}</p>
+              {/* description intentionally hidden */}
             </div>
           </div>
         </div>
@@ -303,22 +298,8 @@ export default function ArtistPage() {
 
           <section className="space-y-3 border-t border-white/5 pt-4">
             <h2 className="text-lg font-semibold text-white md:text-xl">About</h2>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs text-white/60">Monthly listeners</p>
-                <p className="text-xl font-bold text-white">{artist.subscriber_count ? artist.subscriber_count.toLocaleString() : "-"}</p>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs text-white/60">Origin</p>
-                <p className="text-xl font-bold text-white">{artist.country || "-"}</p>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs text-white/60">Tracks loaded</p>
-                <p className="text-xl font-bold text-white">{tracks.length}</p>
-              </div>
-            </div>
             <div className="space-y-2 text-sm leading-relaxed text-white/80">
-              {artist.description ? artist.description.split("\n").map((line) => <p key={line}>{line}</p>) : <p className="text-white/60">Opis nije dostupan.</p>}
+              {artist.description ? artist.description : ""}
             </div>
           </section>
         </div>
