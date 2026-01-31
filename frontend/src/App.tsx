@@ -45,6 +45,7 @@ function Shell() {
           <Route path="/playlist" element={<PlaylistPage />} />
           <Route path="/album/:albumId" element={<AlbumPage />} />
           <Route path="/album" element={<AlbumPage />} />
+          <Route path="/create" element={<Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
