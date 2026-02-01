@@ -278,6 +278,17 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
           },
           onStateChange: (event: any) => {
             const state = event.data;
+            // Force playback if the player only cues the video (state 5) after a user click.
+            if (state === 5 && playerRef.current?.playVideo) {
+              try {
+                playerRef.current.playVideo();
+                setIsPlaying(true);
+              } catch (err) {
+                console.warn("playVideo on cue failed", err);
+              }
+              return;
+            }
+
             setIsPlaying(state === 1);
 
             if ((state === 1 || state === 2) && playerRef.current) {
