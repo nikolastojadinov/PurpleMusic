@@ -205,13 +205,12 @@ export const PlayerProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     if (!isPlayerVisible && playerRef.current) {
+      // Keep the player instance alive; just pause when hidden so we can resume instantly on next click.
       try {
-        playerRef.current.destroy();
+        playerRef.current.pauseVideo?.();
       } catch (err) {
-        console.warn("Failed to destroy player", err);
+        console.warn("Pause when hidden failed", err);
       }
-      playerRef.current = null;
-      setPlayerReady(false);
       setIsPlaying(false);
     }
   }, [isPlayerVisible]);
