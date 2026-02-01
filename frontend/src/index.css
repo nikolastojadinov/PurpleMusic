@@ -78,6 +78,12 @@ All colors MUST be HSL.
       linear-gradient(180deg, hsl(253 30% 3%), hsl(250 32% 7%)),
       var(--noise);
     min-height: 100vh;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  body::-webkit-scrollbar {
+    display: none;
   }
 
   body.search-expanded [data-app-header="main"],
@@ -110,6 +116,18 @@ All colors MUST be HSL.
   
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Hide scrollbars on mobile while keeping touch scroll active */
+  @media (max-width: 768px) {
+    body * {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    body *::-webkit-scrollbar {
+      display: none;
+    }
   }
 
   /* Unified YouTube player shell for mini + fullscreen */

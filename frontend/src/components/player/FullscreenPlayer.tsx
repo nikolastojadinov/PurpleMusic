@@ -1,60 +1,55 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, Heart, Pause, Play, SkipBack, SkipForward, Volume2, X } from "lucide-react";
 
-type FullscreenPlayerProps = {
-  title: string;
-  artist: string;
-  cover: string;
-  isOpen: boolean;
-  isPlaying: boolean;
-  progress: number; // percent 0-100
-  durationSeconds: number;
-  volume: number;
-  currentSeconds: number;
-  onTogglePlay: () => void;
-  onClose: () => void;
-  onScrub: (value: number) => void;
-  onVolume: (value: number) => void;
-};
+import { usePlayer } from "../../lib/playerContext";
 
-const formatTime = (totalSeconds: number) => {
-  const safe = Math.max(0, Math.round(totalSeconds));
-  const mins = Math.floor(safe / 60)
-    .toString()
-    .padStart(2, "0");
-  const secs = (safe % 60).toString().padStart(2, "0");
-  return `${mins}:${secs}`;
-};
+export default function FullscreenPlayer() {
+  const {
+    isPlaying,
+    isFullscreen,
+    isPlayerVisible,
+    currentTitle,
+    currentArtist,
+    currentThumbnailUrl,
+    currentTime,
+    duration,
+    volume,
+    formatTime,
+    togglePlay,
+    skipBackward,
+    skipForward,
+    seekTo,
+    setVolume,
+    setIsFullscreen,
+    setIsPlayerVisible,
+  } = usePlayer();
 
-export default function FullscreenPlayer({
-  title,
-  artist,
-  cover,
-  isOpen,
-  isPlaying,
-  progress,
-  durationSeconds,
-  volume,
-  currentSeconds,
-  onTogglePlay,
-  onClose,
-  onScrub,
-  onVolume,
-}: FullscreenPlayerProps) {
+  const title = currentTitle || "Now playing";
+  const artist = currentArtist || "YouTube Music";
+  const cover = currentThumbnailUrl || "https://images.unsplash.com/photo-1521336575822-6da63fb45455?auto=format&fit=crop&w=1400&q=80";
+  const progress = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
   const [liked, setLiked] = useState(false);
   const backgroundStyle = useMemo(
     () => ({ backgroundImage: `radial-gradient(circle at 50% 30%, rgba(124,58,237,0.25), transparent 42%), url(${cover})` }),
     [cover],
   );
 
-  if (!isOpen) return null;
+  if (!isPlayerVisible || !isFullscreen) return null;
+
+  const handleClose = () => setIsPlayerVisible(false);
+  const handleVolumeChange = (value: number) => setVolume(value);
+  const handleProgressChange = (value: number) => {
+    if (duration <= 0) return;
+    const seconds = (value / 100) * duration;
+    seekTo(seconds);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[radial-gradient(circle_at_50%_25%,rgba(124,58,237,0.25),transparent_38%),linear-gradient(180deg,#0a0812,#05030b)] text-[#F3F1FF]">
       <div className="flex items-center justify-between border-b border-white/10 bg-[rgba(20,14,30,0.6)] px-4 py-3 backdrop-blur">
         <button
           type="button"
-          onClick={onClose}
+          onClick={() => setIsFullscreen(false)}
           className="h-10 w-10 rounded-full border border-white/15 text-[#CFA85B] shadow-[0_6px_18px_rgba(0,0,0,0.35)] hover:text-[#F6C66D]"
           aria-label="Close player"
         >
@@ -62,7 +57,7 @@ export default function FullscreenPlayer({
         </button>
         <button
           type="button"
-          onClick={onClose}
+          onClick={handleClose}
           className="h-10 w-10 rounded-full border border-white/15 text-[#8B86A3] shadow-[0_6px_18px_rgba(0,0,0,0.35)] hover:text-[#F3F1FF]"
           aria-label="Exit fullscreen"
         >
@@ -75,7 +70,9 @@ export default function FullscreenPlayer({
           className="yt-player-shell is-fullscreen w-full max-w-5xl"
           style={{ ...backgroundStyle, backgroundSize: "cover", backgroundPosition: "center", aspectRatio: "16 / 9" }}
           aria-hidden
-        />
+        >
+          <div id="yt-player-slot-fullscreen" className="h-full w-full" />
+        </div>
 
         <div className="mt-8 w-full max-w-xl text-center">
           <h2 className="mb-2 text-[28px] font-bold leading-tight text-[#F6C66D] drop-shadow-[0_4px_18px_rgba(245,194,107,0.35)]">
@@ -91,13 +88,13 @@ export default function FullscreenPlayer({
             max={100}
             step={0.1}
             value={progress}
-            onChange={(e) => onScrub(Number(e.target.value))}
+            onChange={(e) => handleProgressChange(Number(e.target.value))}
             className="w-full accent-[#F08CFF]"
             aria-label="Scrub timeline"
           />
           <div className="mt-2 flex justify-between text-xs text-[#8B86A3]">
-            <span>{formatTime(currentSeconds)}</span>
-            <span>{formatTime(durationSeconds)}</span>
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
           </div>
         </div>
 
@@ -106,6 +103,7 @@ export default function FullscreenPlayer({
             type="button"
             className="flex h-12 w-12 items-center justify-center rounded-full border border-white/15 text-[#F5C26B] shadow-[0_10px_24px_rgba(0,0,0,0.35)] hover:text-[#F08CFF]"
             aria-label="Previous"
+            onClick={skipBackward}
           >
             <SkipBack className="h-6 w-6" />
           </button>
@@ -113,7 +111,7 @@ export default function FullscreenPlayer({
             type="button"
             className="pm-cta-button pm-cta-button--md flex items-center justify-center"
             aria-label={isPlaying ? "Pause" : "Play"}
-            onClick={onTogglePlay}
+            onClick={togglePlay}
           >
             {isPlaying ? <Pause className="h-8 w-8" /> : <Play className="h-8 w-8" />}
           </button>
@@ -121,6 +119,7 @@ export default function FullscreenPlayer({
             type="button"
             className="flex h-12 w-12 items-center justify-center rounded-full border border-white/15 text-[#F5C26B] shadow-[0_10px_24px_rgba(0,0,0,0.35)] hover:text-[#F08CFF]"
             aria-label="Next"
+            onClick={skipForward}
           >
             <SkipForward className="h-6 w-6" />
           </button>
@@ -145,7 +144,7 @@ export default function FullscreenPlayer({
               max={100}
               step={1}
               value={volume}
-              onChange={(e) => onVolume(Number(e.target.value))}
+              onChange={(e) => handleVolumeChange(Number(e.target.value))}
               className="w-full accent-[#F5C26B]"
               aria-label="Volume"
             />
