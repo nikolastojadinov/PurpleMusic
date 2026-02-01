@@ -52,8 +52,6 @@ export default function YouTubePlayerContainer() {
     };
   }, [anchorId, fallback, isPlayerVisible]);
 
-  if (!isPlayerVisible) return null;
-
   const wrapperStyles = rect
     ? {
         zIndex: isFullscreen ? 55 : 31,
@@ -80,7 +78,7 @@ export default function YouTubePlayerContainer() {
     <div
       id={isFullscreen ? "yt-player-wrapper-fullscreen" : "yt-player-wrapper-mini"}
       className={`yt-player-shell ${isFullscreen ? "is-fullscreen" : "is-mini"}`}
-      style={wrapperStyles}
+      style={{ ...wrapperStyles, visibility: isPlayerVisible ? "visible" : "hidden" }}
     >
       <div className="yt-player-frame">
         <div id="yt-player" className="yt-player-node" />
