@@ -65,6 +65,18 @@ All colors MUST be HSL.
 }
 
 @layer base {
+  html {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  html::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+    background: transparent;
+  }
+
   * {
     /* Replace invalid @apply of arbitrary class with explicit border color */
     border-color: hsl(var(--border));
